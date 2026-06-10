@@ -5,14 +5,15 @@ import numpy as np
 
 
 def make_data():
-    """第2章と同一の合成データ(50点)。"""
+    """第2章と同一の合成データ(20人)。"""
     rng = np.random.default_rng(42)
-    X = rng.uniform(0.0, 2.0, size=50)                  # (50,)
-    y = 2.0 * X + 1.0 + rng.normal(0.0, 0.5, size=50)   # (50,)
-    return X, y
+    X = rng.uniform(0, 9, size=(20, 1))       # 勉強時間 (20, 1)
+    noise = rng.normal(0, 6.0, size=(20, 1))
+    y = 7.0 * X + 20.0 + noise                # 点数 (20, 1)
+    return X.ravel(), y.ravel()               # 本章はスカラー w で進めるので (20,) に潰す
 
 
-def train(X, y, w=0.0, b=0.0, lr=0.1, num_steps=1000):
+def train(X, y, w=0.0, b=0.0, lr=0.01, num_steps=5000):
     """4.2 の4拍子。loss の推移(学習曲線)を返す。"""
     history = []
     for _ in range(num_steps):
@@ -28,8 +29,8 @@ def train(X, y, w=0.0, b=0.0, lr=0.1, num_steps=1000):
 
 X, y = make_data()
 
-# --- 図4.1: 学習曲線(lr=0.1)。左: そのまま、右: 縦軸を対数に ---
-_, _, history = train(X, y, lr=0.1, num_steps=300)
+# --- 図4.1: 学習曲線(lr=0.01)。左: そのまま、右: 縦軸を対数に ---
+_, _, history = train(X, y, lr=0.01, num_steps=3000)
 fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 axes[0].plot(history)
 axes[0].set_xlabel("step")
@@ -44,7 +45,7 @@ fig.tight_layout()
 
 # --- 図4.2: learning rate を変える(演習1)---
 plt.figure(figsize=(6, 4))
-for lr in [0.01, 0.1, 0.5]:
+for lr in [0.001, 0.01, 0.05]:
     _, _, history = train(X, y, lr=lr, num_steps=100)
     plt.plot(history, label="lr = {}".format(lr))
 plt.yscale("log")
@@ -56,7 +57,7 @@ plt.title("learning rate と学習曲線")
 # --- 図4.3: 初期値を変える(演習2)---
 plt.figure(figsize=(6, 4))
 for w0, b0 in [(0.0, 0.0), (10.0, -5.0), (-3.0, 8.0)]:
-    w, b, history = train(X, y, w=w0, b=b0, lr=0.1, num_steps=300)
+    w, b, history = train(X, y, w=w0, b=b0, lr=0.01, num_steps=5000)
     plt.plot(history, label="init w={}, b={} -> ({:.3f}, {:.3f})".format(w0, b0, w, b))
 plt.yscale("log")
 plt.xlabel("step")

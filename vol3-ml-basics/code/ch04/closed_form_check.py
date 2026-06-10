@@ -5,14 +5,15 @@ import numpy as np
 
 
 def make_data():
-    """第2章と同一の合成データ(50点)。"""
+    """第2章と同一の合成データ(20人)。"""
     rng = np.random.default_rng(42)
-    X = rng.uniform(0.0, 2.0, size=50)                  # (50,)
-    y = 2.0 * X + 1.0 + rng.normal(0.0, 0.5, size=50)   # (50,)
-    return X, y
+    X = rng.uniform(0, 9, size=(20, 1))       # 勉強時間 (20, 1)
+    noise = rng.normal(0, 6.0, size=(20, 1))
+    y = 7.0 * X + 20.0 + noise                # 点数 (20, 1)
+    return X.ravel(), y.ravel()               # 本章はスカラー w で進めるので (20,) に潰す
 
 
-def train(X, y, w=0.0, b=0.0, lr=0.1, num_steps=1000):
+def train(X, y, w=0.0, b=0.0, lr=0.01, num_steps=5000):
     """4.2 の4拍子を関数に畳んだだけ。中身は一字も変わっていない。"""
     for _ in range(num_steps):
         y_hat = w * X + b                        # forward

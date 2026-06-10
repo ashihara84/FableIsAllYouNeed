@@ -5,10 +5,10 @@ import numpy as np
 
 rng = np.random.default_rng(42)
 
-# --- 第2章と同じレシピの合成データ(サンプル数だけ増やして 256 件) ---
+# --- 第2章と同じ生成規則の合成データ(模試で人数が 256 人に増えた) ---
 N = 256
-X = rng.uniform(-5, 5, size=(N, 1))            # (N, 1)
-y = 3.0 * X + 2.0 + rng.standard_normal((N, 1))  # (N, 1)  正解: w=3, b=2 + ノイズ
+X = rng.uniform(0, 9, size=(N, 1))             # 勉強時間 (N, 1)
+y = 7.0 * X + 20.0 + rng.normal(0, 6.0, size=(N, 1))  # 点数 (N, 1)  真の規則: w=7, b=20
 
 
 def predict(X, w, b):
@@ -84,24 +84,24 @@ for batch_size in [256, 32, 1]:
 
 # 同じ「データ1周」でも、更新回数が多いほど loss が下がっている
 assert results_1epoch[1] < results_1epoch[32] < results_1epoch[256]
-assert results_1epoch[256] > 30.0              # 全データ(1更新)はまだ遠い。実測 約55
-assert results_1epoch[32] < 10.0               # ミニバッチ(8更新)。実測 約8.1
-assert results_1epoch[1] < 2.0                 # 1件ずつ(256更新)。実測 約1.0(ほぼ床)
+assert results_1epoch[256] > 500.0             # 全データ(1更新)はまだ遠い。実測 約718
+assert results_1epoch[32] < 150.0              # ミニバッチ(8更新)。実測 約117
+assert results_1epoch[1] < 50.0                # 1件ずつ(256更新)。実測 約44.5(床の近く)
 
 # === 5.2 の確認: 長く走らせれば3流儀とも収束するが、到達の速さが違う ===
 final = {}
 for batch_size in [256, 32, 1]:
-    w, b, history, _ = train(batch_size=batch_size, n_epochs=30, lr=0.01)
+    w, b, history, _ = train(batch_size=batch_size, n_epochs=150, lr=0.01)
     final[batch_size] = (w, b, history)
 
-# ミニバッチと1件ずつは、30エポックでノイズの床(およそ1.0)の近くまで到達
+# ミニバッチと1件ずつは、150エポックでばらつきの床(およそ36 = 6^2)の近くまで到達
 for batch_size in [32, 1]:
     w, b, history = final[batch_size]
-    assert history[-1] < 1.2                   # 実測: 32 -> 0.995, 1 -> 1.083
-    assert np.allclose(w, 3.0, atol=0.15)      # 正解 w=3 のすぐそば
-    assert abs(b - 2.0) < 0.2                  # 正解 b=2 のすぐそば
+    assert history[-1] < 38.0                  # 実測: 32 -> 35.92, 1 -> 36.16
+    assert np.allclose(w, 7.0, atol=0.2)       # 正解 w=7 のすぐそば
+    assert abs(b - 20.0) < 0.6                 # 正解 b=20 のすぐそば
 
-# 全データは同じ30エポック(=たった30更新)ではまだ途中(実測 約2.25)
-assert final[256][2][-1] > 2.0 * final[32][2][-1]
+# 全データは同じ150エポック(=たった150更新)ではまだ途中(実測 約56.5)
+assert final[256][2][-1] > 50.0
 
 print("ok: すべての assert を通過しました")

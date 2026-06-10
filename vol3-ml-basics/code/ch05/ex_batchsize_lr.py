@@ -4,10 +4,10 @@ import numpy as np
 
 rng = np.random.default_rng(42)
 
-# --- 第2章と同じレシピの合成データ(minibatch_sgd.py と同一) ---
+# --- 第2章と同じ生成規則の合成データ(minibatch_sgd.py と同一) ---
 N = 256
-X = rng.uniform(-5, 5, size=(N, 1))            # (N, 1)
-y = 3.0 * X + 2.0 + rng.standard_normal((N, 1))  # (N, 1)
+X = rng.uniform(0, 9, size=(N, 1))             # 勉強時間 (N, 1)
+y = 7.0 * X + 20.0 + rng.normal(0, 6.0, size=(N, 1))  # 点数 (N, 1)
 
 
 def predict(X, w, b):
@@ -40,37 +40,37 @@ def train(batch_size, n_epochs, lr, seed=0):
     return mse(predict(X, w, b), y)
 
 
-# --- (batch_size, lr) の総当たり。各組 10 エポック ---
+# --- (batch_size, lr) の総当たり。各組 30 エポック ---
 np.seterr(all="ignore")                        # 発散組の overflow 警告を黙らせる
 batch_sizes = [1, 32, 256]
-lrs = [0.001, 0.01, 0.05, 0.1]
+lrs = [0.001, 0.005, 0.02, 0.03]
 
-print("10エポック後の loss(行: lr、列: batch_size)")
+print("30エポック後の loss(行: lr、列: batch_size)")
 print(f"{'lr':>8} " + "".join(f"{f'bs={bs}':>12}" for bs in batch_sizes))
 table = {}
 for lr in lrs:
     cells = []
     for bs in batch_sizes:
-        loss = train(batch_size=bs, n_epochs=10, lr=lr)
+        loss = train(batch_size=bs, n_epochs=30, lr=lr)
         table[(bs, lr)] = loss
-        cells.append("  発散" if loss > 1e6 else f"{loss:12.3f}")
+        cells.append("  発散" if not loss < 1e6 else f"{loss:12.3f}")
     print(f"{lr:>8} " + "".join(f"{c:>12}" for c in cells))
 
 # --- 観察した関係を assert で固定する ---
-# (1) 同じ lr=0.1 でも、バッチが小さいと発散し、大きいと収束する
-assert table[(1, 0.1)] > 1e6                   # batch_size=1 は発散
-assert table[(256, 0.1)] < 1.2                 # batch_size=256 はノイズの床まで収束
+# (1) 同じ lr=0.03 でも、バッチが小さいと発散し、大きいと収束する
+assert not table[(1, 0.03)] < 1e6              # batch_size=1 は発散(inf/nan に飛ぶ)
+assert table[(256, 0.03)] < 80.0               # batch_size=256 は下り続けている。実測 約72
 
-# (2) 同じ lr=0.001 では立場が逆転: 小バッチは床に到達、大バッチはまだ遠い
-assert table[(1, 0.001)] < 1.2                 # 更新回数が多いので進む
-assert table[(256, 0.001)] > 30.0              # 10回しか更新していないので進まない
+# (2) 同じ lr=0.001 では立場が逆転: 小バッチは床(およそ36)に到達、大バッチはまだ遠い
+assert table[(1, 0.001)] < 38.0                # 更新回数が多いので進む。実測 約36.1
+assert table[(256, 0.001)] > 200.0             # 30回しか更新していないので進まない。実測 約220
 
 # (3) 「ちょうどいい lr」はバッチサイズに依存する:
 #     batch_size=1 のベストは小さい lr 側、batch_size=256 のベストは大きい lr 側
 best_lr_bs1 = min(lrs, key=lambda lr: table[(1, lr)])
 best_lr_bs256 = min(lrs, key=lambda lr: table[(256, lr)])
-assert best_lr_bs1 <= 0.01                     # 実測 0.001
-assert best_lr_bs256 >= 0.05                   # 実測 0.1
+assert best_lr_bs1 <= 0.005                    # 実測 0.001
+assert best_lr_bs256 >= 0.02                   # 実測 0.03
 assert best_lr_bs1 < best_lr_bs256
 
 print()
