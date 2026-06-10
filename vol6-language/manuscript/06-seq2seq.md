@@ -1,0 +1,330 @@
+# 第6章 seq2seq — 翻訳という問題設定
+
+前章で、私たちは RNN 言語モデルを手に入れました。隠れ状態 $\mathbf{h}$ に「ここまでの要約」を持ち回り、次のトークンを予測する。n-gram より良い perplexity が出て、そして2つの痛みも体感しました。1トークンずつしか進めないので遅い(痛み1)、遠くの情報が薄まって届かない(痛み2)。
+
+しかし、ここで足を止めて論文の正体を思い出してください。"Attention Is All You Need" は、**翻訳のモデル**を提案した論文です。実験はすべて英独・英仏翻訳で行われています。一方、私たちの言語モデルにできるのは「同じ文章の続きを書く」ことだけです。"the king rules the" の次を当てることはできても、英文を読んで**別の言語の文**を出すことはできません。入力と出力が別々の系列で、長さも語彙も語順も違う——この問題は、いまの道具のどこにも収まりません。
+
+この章では、この「系列を入れて系列を出す」問題を定式化し、RNN を2台つないだ **seq2seq** を実装します。そして3つ目の痛み——固定長ボトルネック——を、数値の表として実測します。この痛みが、次章で attention を呼び出すための最後の需要になります。
+
+なお、この章のコードの完全版は `code/ch06/seq2seq_rnn.py` にあります。本文では、その中身を流れに沿って分けて掲載します。
+
+## 6.1 系列を入れて系列を出す — encoder-decoder という分業
+
+まず、論文の最初の1文を見てみましょう。タイトルのすぐ下、アブストラクトの冒頭です。
+
+> *"The dominant sequence transduction models are based on complex recurrent or convolutional neural networks that include an encoder and a decoder."*
+> — Vaswani et al., "Attention Is All You Need", Abstract
+>
+> 訳: 「支配的な系列変換モデルは、エンコーダとデコーダを備えた、複雑な再帰型または畳み込み型のニューラルネットワークに基づいている。」
+
+"sequence transduction"(系列変換)という言葉が、論文の最初の3語に入っています。transduction は耳慣れない単語ですが、正体は単純で、**系列を入力し、別の系列を出力する**タスクの総称です。英文を入れて独文を出す翻訳。長文を入れて短文を出す要約。音声を入れて文字列を出す音声認識。すべて系列変換です。論文は1文目から「これは系列変換のモデルの話だ」と宣言していたのです。そして同じ文に、この節の主役も2人とも登場しています——encoder と decoder です。
+
+では、系列変換はなぜ言語モデルのままでは解けないのでしょうか。言語モデルは各ステップで「直前までの系列の続き」を1トークン出す装置でした。翻訳では、出力は入力の続きではありません。それどころか、**入力を最後まで読まないと、出力の1トークン目すら決められない**のです。英語の文末の動詞が、日本語では文頭近くに来ることもあります。「読みながら書く」では間に合わず、「全部読んでから、書き始める」必要があります。
+
+この「読む」と「書く」を、2台の RNN に分業させるのが encoder-decoder という設計です。
+
+- **encoder(符号化器)**: 入力系列を1トークンずつ読み、最後の隠れ状態 $\mathbf{c}$ `(d_h,)` を作る。$\mathbf{c}$ は「入力文全体の要約」で、文脈ベクトル(context vector)と呼ばれます
+- **decoder(復号化器)**: $\mathbf{c}$ を初期の隠れ状態として受け取り、そこから出力系列を1トークンずつ生成する
+
+decoder の正体は、前章までに作った RNN 言語モデルそのものです。違いはただ1点、白紙($\mathbf{h}_0 = \mathbf{0}$)から書き始めるのではなく、**入力文の要約 $\mathbf{c}$ を頭に入れた状態で書き始める**ことです。式で書けば、第1章1.2の連鎖分解に条件 $\mathbf{x}$ が1つ増えただけです。
+
+$$P(\mathbf{y} \mid \mathbf{x}) = \prod_{t=1}^{m} P(y_t \mid y_1, \ldots, y_{t-1},\ \mathbf{x})$$
+
+ここで $\mathbf{x} = (x_1, \ldots, x_n)$ が入力系列、$\mathbf{y} = (y_1, \ldots, y_m)$ が出力系列です。長さ $n$ と $m$ は違っていて構いません。条件部の $\mathbf{x}$ をどうやってモデルに渡すか——seq2seq の答えが「encoder が $\mathbf{c}$ に詰めて渡す」です。
+
+この構図は論文のセクション3の冒頭にもそのまま書かれています。「encoder は入力系列を連続的な表現に写し、decoder はそれを受けて出力系列を1要素ずつ生成する」。アブストラクトの1文目とこの2文が、いまやそのまま読めるはずです。論文タイトルの "Attention Is All You Need" が何に対して「All You Need」と言っているのか——その土俵である系列変換の枠組みに、私たちはいま立ちました。
+
+## 6.2 [コード] RNN encoder-decoder を小さなタスクで実装する
+
+実装に移ります。ただし、本物の翻訳をやるにはコーパスも訓練時間も足りません。そこで、翻訳の難しさの核だけを抜き出したミニチュアを使います。**文字列反転**です。
+
+```
+入力: fcahd  →  出力: dhacf
+```
+
+ふざけたタスクに見えるかもしれませんが、選んだ理由は4つあります。第一に、出力の1文字目は入力の**最後の**文字です。つまり「全部読んでから書き始める」という encoder-decoder の分業が、構造的に強制されます。第二に、正解がただ1つに決まるので、生成結果の採点が機械的にできます(翻訳の品質評価は本当はとても難しい問題です)。第三に、データは乱数からいくらでも作れます。第四に、入力長を自由に変えられます——これが 6.3 の実験の仕込みです。
+
+### 語彙とデータ生成
+
+文字は a〜h の8種類、これに「書き始めの合図」`BOS` と「書き終わりの合図」`EOS` を加えた10語が全語彙です。本物の翻訳なら第2章の BPE でトークンに切るところですが、このミニチュアでは文字がそのままトークンです。
+
+```python
+BOS = 0          # 生成開始の合図(decoder の最初の入力)
+EOS = 1          # 生成終了の合図(decoder が最後に出すべき記号)
+LETTERS = "abcdefgh"
+OFFSET = 2       # 文字 ID は 2 始まり(0, 1 は BOS / EOS が使う)
+V = OFFSET + len(LETTERS)  # 語彙サイズ 10
+
+
+def make_data(rng, n, length):
+    """文字列反転タスクのペアを n 個生成する。
+
+    戻り値: (src, tgt)
+      src: (n, length) — 入力の文字 ID 列(ID は OFFSET..V-1 の一様乱数)
+      tgt: (n, length) — src を左右反転した文字 ID 列
+    BOS / EOS はここでは付けない(teacher forcing / 生成の側で付ける)。
+    第7章の attention 付き seq2seq も同じこの関数でデータを作り、性能を比較する。
+    """
+    src = rng.integers(OFFSET, V, size=(n, length))
+    tgt = src[:, ::-1].copy()
+    return src, tgt
+```
+
+`make_data` をわざわざ独立した関数にしてあるのは、docstring に書いたとおり**次章への布石**です。第7章では attention 付きの seq2seq を、同じ語彙・同じデータ生成・同じ評価で訓練し、この章のモデルと直接対決させます。条件を揃えた対決のために、データの作り方をここで固定しておきます。
+
+### Tensor に足りない演算を外付けで補う
+
+autograd は第5巻5章の `tensor_autograd.py` をそのまま import します。ただし、今回必要な演算が2つ足りません。tanh と、埋め込みの lookup です。第5巻のファイルには手を加えず、この章のコードの側で「外付けのノード」として補います。作り方は第5巻4章で確立した雛形——forward を計算し、局所勾配を `_backward` に書く——の繰り返しです。
+
+```python
+def tanh(t):
+    """tanh ノード。第5巻4章の演習問1(Value 版 tanh)の Tensor 版。
+    局所勾配は 1 - tanh^2(第5巻1章)。"""
+    out = Tensor(np.tanh(t.data), (t,))
+
+    def _backward():
+        t.grad += (1.0 - out.data ** 2) * out.grad
+
+    out._backward = _backward
+    return out
+
+
+def embedding(E, idx):
+    """埋め込み行列 E (V, d_emb) から idx (n,) の行を取り出す lookup ノード(第3章)。
+    backward は「取り出した行へ勾配を足し戻す」。同じ ID が複数回出ても
+    正しく累積するよう np.add.at を使う(ふつうの += は重複 ID を1回しか足さない)。"""
+    idx = np.asarray(idx, dtype=int)
+    out = Tensor(E.data[idx], (E,))
+
+    def _backward():
+        np.add.at(E.grad, idx, out.grad)
+
+    out._backward = _backward
+    return out
+```
+
+`embedding` は第3章でやった「one-hot @ E は E の行の取り出し」の、行の取り出し側だけを直接実装したものです。backward は forward の逆向きで、「取り出した先に届いた勾配を、取り出した元の行へ足し戻す」だけ。バッチの中に同じ文字が2回出たら、その行には勾配が2回足されます——「道が複数なら足す」(第2巻5章)が、ここにも顔を出します。
+
+### モデル: encoder と decoder
+
+パラメータは encoder 用と decoder 用の RNN が1台ずつ、共有の埋め込み $E$、そして語彙へのスコアを出す出力層です。初期化は第5巻6.6の Xavier($1/\sqrt{d_{in}}$)です。
+
+```python
+D_EMB = 16   # 埋め込み次元
+D_H = 32     # 隠れ状態の次元 = 文全体を詰め込む「1本のベクトル」の太さ
+
+
+def init_params(rng):
+    """パラメータ一式。初期化は Xavier(第5巻6.6: 1/sqrt(入力次元))。"""
+    def mat(d_in, d_out):
+        return Tensor(rng.standard_normal((d_in, d_out)) / np.sqrt(d_in))
+
+    return {
+        "E": mat(V, D_EMB),            # 埋め込み(encoder / decoder で共有)
+        "Wx_e": mat(D_EMB, D_H),       # encoder: 入力 → 隠れ
+        "Wh_e": mat(D_H, D_H),         # encoder: 隠れ → 隠れ
+        "b_e": Tensor(np.zeros(D_H)),
+        "Wx_d": mat(D_EMB, D_H),       # decoder: 入力 → 隠れ
+        "Wh_d": mat(D_H, D_H),         # decoder: 隠れ → 隠れ
+        "b_d": Tensor(np.zeros(D_H)),
+        "Wo": mat(D_H, V),             # decoder: 隠れ → 語彙スコア(logits)
+        "bo": Tensor(np.zeros(V)),
+    }
+
+
+def encode(params, src):
+    """encoder: 入力列を1トークンずつ読み、最後の隠れ状態1本 (n, D_H) に要約する。
+    第5章の RNN と同じ漸化式 h_t = tanh(x_t @ Wx + h_{t-1} @ Wh + b)。"""
+    n, length = src.shape
+    h = Tensor(np.zeros((n, D_H)))
+    for t in range(length):
+        x_t = embedding(params["E"], src[:, t])              # (n, D_EMB)
+        h = tanh(x_t @ params["Wx_e"] + h @ params["Wh_e"] + params["b_e"])
+    return h  # ボトルネック: 入力が何文字でも、これは (n, D_H) の1本
+
+
+def decode_step(params, h, idx_in):
+    """decoder を1ステップ進める。入力トークン idx_in (n,) と前の隠れ状態 h を受け、
+    新しい隠れ状態と語彙スコア logits (n, V) を返す。"""
+    x_t = embedding(params["E"], idx_in)
+    h = tanh(x_t @ params["Wx_d"] + h @ params["Wh_d"] + params["b_d"])
+    logits = h @ params["Wo"] + params["bo"]
+    return h, logits
+```
+
+`encode` の中身は前章の RNN とまったく同じ漸化式で、新しいことは何もしていません。注目してほしいのは return の行です。入力が2文字でも12文字でも、返るのは `(n, D_H)` の隠れ状態**1本**——ここが、この章の後半の主役になります。
+
+### 訓練: 損失と生成
+
+訓練時の損失と、訓練後に実際に文字列を生成する関数を書きます。先に白状しておくと、この2つの関数には**設計上の大きな非対称**があります。それが 6.4 の主題なので、ここではコードの動きだけ追ってください。
+
+```python
+def loss_teacher_forcing(params, src, tgt):
+    """teacher forcing の損失(1トークンあたりの平均 cross-entropy)。
+    decoder への入力は [BOS, tgt[0], ..., tgt[L-1]](自分の出力ではなく正解)、
+    当てるべき出力は [tgt[0], ..., tgt[L-1], EOS]。"""
+    n, length = tgt.shape
+    h = encode(params, src)
+    inputs = np.concatenate([np.full((n, 1), BOS), tgt], axis=1)    # (n, L+1)
+    targets = np.concatenate([tgt, np.full((n, 1), EOS)], axis=1)   # (n, L+1)
+    total = Tensor(0.0)
+    for t in range(length + 1):
+        h, logits = decode_step(params, h, inputs[:, t])
+        total = total + softmax_cross_entropy(logits, targets[:, t])
+    return total * (1.0 / (length + 1))
+
+
+def generate(params, src, max_steps):
+    """自己回帰生成: BOS から始め、自分の出力(argmax)を次の入力に戻す。
+    戻り値: (n, max_steps) の出力 ID 列。"""
+    h = encode(params, src)
+    idx = np.full(src.shape[0], BOS)
+    out = []
+    for _ in range(max_steps):
+        h, logits = decode_step(params, h, idx)
+        idx = logits.data.argmax(axis=1)  # 貪欲法: 一番スコアの高い1語
+        out.append(idx)
+    return np.stack(out, axis=1)
+```
+
+訓練ループは、第3巻4章以来の4拍子そのままです。長さを 2〜12 から一様に選び、その長さのバッチを作って1歩下る、を 4000 回繰り返します。
+
+```python
+MIN_LEN, MAX_LEN = 2, 12   # 訓練に使う入力長の範囲(両端含む一様)。評価もこの内側で行う
+BATCH = 32
+STEPS = 4000
+LR = 0.3
+
+
+def train(verbose=True):
+    rng = np.random.default_rng(42)
+    params = init_params(rng)
+    for step in range(STEPS):
+        length = int(rng.integers(MIN_LEN, MAX_LEN + 1))
+        src, tgt = make_data(rng, BATCH, length)
+        loss = loss_teacher_forcing(params, src, tgt)   # 1. forward + 2. loss
+        for p in params.values():
+            p.grad[...] = 0.0
+        loss.backward()                                 # 3. gradient
+        for p in params.values():
+            p.data -= LR * p.grad                       # 4. update
+        if verbose and (step % 500 == 0 or step == STEPS - 1):
+            print("  step {:>5}: loss = {:.4f} (len {})".format(step, loss.data, length))
+    return params
+```
+
+実行します。手元では訓練全体で 4.3 秒でした。
+
+```
+step     0: loss = 2.3487 (len 8)
+step   500: loss = 0.2810 (len 5)
+step  1000: loss = 0.0465 (len 3)
+step  1500: loss = 0.2509 (len 5)
+step  2000: loss = 0.9804 (len 10)
+step  2500: loss = 0.1455 (len 5)
+step  3000: loss = 0.8011 (len 9)
+step  3500: loss = 0.0192 (len 5)
+step  3999: loss = 0.0365 (len 3)
+入力 hffh → 出力 hffh<eos> (正解 hffh<eos>)
+```
+
+最初の loss 2.3487 は $\ln 10 \approx 2.30$、つまり「10 語の語彙から当てずっぽう」の値です(第4巻5章)。そこから loss は下がり、訓練後のモデルは4文字の入力を完璧に反転できています。EOS で正しく筆を置いていることにも注目してください。機械が「書き終わり」を自分で宣言できるのは、EOS という1トークンを語彙に足したからです。
+
+ところで、ログをよく見ると不穏な規則性があります。長さ3や5のバッチの loss は 0.02〜0.28 まで下がっているのに、長さ10で 0.98、長さ9で 0.80——**長いバッチに当たった回だけ、loss が高止まりしている**のです。偶然でしょうか。
+
+## 6.3 痛み3: 固定長ボトルネック — 文全体を1本のベクトルに圧縮する無理
+
+偶然ではありません。確かめましょう。訓練済みのモデル1つに対して、入力長だけを変えて系列一致率(全文字と EOS まで完全一致してはじめて正解)を測ります。
+
+```python
+def sequence_accuracy(params, length, n_eval, seed):
+    """長さ length の新しいデータ n_eval 個で、系列一致率(全文字一致のみ正解)を測る。
+    EOS の位置まで含めて要求する(L 文字 + EOS が全部合って 1 点)。"""
+    rng = np.random.default_rng(seed)
+    src, tgt = make_data(rng, n_eval, length)
+    pred = generate(params, src, length + 1)
+    ok = (pred[:, :length] == tgt).all(axis=1) & (pred[:, length] == EOS)
+    return ok.mean()
+```
+
+結果がこの表です(各長さ200サンプル。完全版のコードでは、この表の値を assert で固定してあります)。
+
+| 入力長 | 2 | 4 | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|---|
+| 系列一致率 | 1.00 | 1.00 | 0.81 | 0.26 | 0.04 | 0.00 |
+
+崩れ方が見事なほど単調です。4文字までは完璧、6文字で2割落ち、8文字で4回に1回しか合わず、12文字では**全滅**です。
+
+ここで強調しておきたいことがあります。これは「習っていない長さに弱い」という話では**ありません**。訓練では長さ2〜12をまんべんなく、毎回新しい乱数で見せています。長さ12のバッチを数百回訓練してなお、長さ12は1問も解けないのです。容疑者は学習不足ではなく、構造です。
+
+構造の急所は、`encode` の return の行に書いておいたコメントです。入力が何文字であろうと、decoder に渡るのは `(n, D_H)` の隠れ状態1本——たった32個の実数です。a〜h の8種類から成る長さ12の文字列は $8^{12} \approx 6.9 \times 10^{10}$ 通りあります。反転タスクでは入力の**全文字**を順序ごと復元する必要があるので、この約690億通りを区別できる情報を、まるごと32個の実数に詰めて運ばなければなりません。実数は連続値なので理論上の容量は無限ですが、実際の $\mathbf{h}$ は tanh で $(-1, 1)$ に押し込められ、勾配降下で到達できる精度には限りがあります。しかも前章の痛み2で見たとおり、$\mathbf{h}$ は1文字読むたびに上書きされる持ち物です。入力の1文字目の情報は、残り11文字ぶんの上書きを生き延びてようやく decoder に渡り、decoder の中でもさらに1ステップごとの上書きにさらされ続けます。
+
+たとえるなら、この encoder-decoder は**メモを一切取らない通訳**です。文を全部聞き終えてから、頭の中に残ったものだけを頼りに訳しはじめる。短い文なら完璧ですが、長い文では最初のほうに聞いた内容から薄れていきます。実際、訓練済みモデルに12文字を反転させた例がこれです。
+
+```
+入力 eggbaccghadg → 出力 gdahgccabf<eos> (正解 gdahgccabgge<eos>)
+```
+
+出力の最初の9文字 `gdahgccab` は正解と完全に一致しています。出力の先頭は入力の**末尾**、つまり encoder が読み終わる直前の、いちばん記憶が新しい部分です。崩れたのは出力の最後の3文字——入力の**先頭**、いちばん古い記憶です。どの位置から崩れるかは、演習問2で系統的に測ります。
+
+この問題には名前がついています。**固定長ボトルネック**(fixed-length bottleneck)。入力がどれだけ長くなっても、情報の通り道が $\mathbf{c}$ という固定の太さの1本に絞られている、という瓶の首の比喩です。前章の痛み1(並列化できない)・痛み2(長距離依存)に続く、**痛み3**として記録しておきます。3つの痛みのうち、これだけは RNN を LSTM に替えても本質的に消えません。1本のベクトルに全部詰める、という設計そのものの問題だからです。
+
+解決の方向は、次章まで読まなくても薄々見えているかもしれません。encoder は途中の隠れ状態 $\mathbf{h}_1, \ldots, \mathbf{h}_n$ を全部計算していたのに、私たちは最後の1本以外を**捨てて**いました。捨てなければいいのではないか?——その通りです。ただし「全部渡す」には、decoder が「いまどれを見るべきか」を選ぶ仕組みが要ります。それが次章の attention です。
+
+## 6.4 teacher forcing と自己回帰生成
+
+最後に、6.2 で白状を保留した「訓練と生成の非対称」を精算します。`loss_teacher_forcing` と `generate` を並べて、decoder への入力だけを見比べてください。
+
+| | decoder への入力 | 出どころ |
+|---|---|---|
+| 訓練時(`loss_teacher_forcing`) | `BOS, tgt[0], tgt[1], ...` | **正解**の系列 |
+| 生成時(`generate`) | `BOS, argmax, argmax, ...` | **自分の直前の出力** |
+
+訓練時に、自分の出力ではなく正解を入力する方式を **teacher forcing**(教師強制)と呼びます。生徒が1文字書くたびに、教師が(たとえ間違っていても)正解を上書きしてから次を書かせる、という光景です。
+
+なぜそうするのでしょうか。試しに逆を想像してみてください。訓練序盤のモデルの出力はデタラメです。そのデタラメを次の入力に使うと、2文字目以降は「デタラメな文脈の続きを当てる」訓練になってしまい、学習の足場が崩れます。teacher forcing なら、各ステップの問題は常に「**正しい**文脈の次の1トークンを当てよ」に固定されます。すべてのステップが、第1章で立てた言語モデルの問題そのものになるのです。
+
+もう1つ、teacher forcing には見逃せない性質があります。decoder への入力列 `[BOS, tgt[0], ..., tgt[L-1]]` は、**訓練を始める前から全部わかっている**ということです。いまの RNN は痛み1のせいでどのみち1ステップずつしか進めませんが、もし各ステップが前のステップを待たないモデルがあれば、全ステップの損失を一斉に計算できることになります。この事実は第8巻3章の訓練ループ——入力と出力を1トークンずらして一斉に損失を取る、Transformer の訓練の核心——の**前提知識**です。ここで覚えた teacher forcing を、第8巻3章がそのまま使います。
+
+一方、生成時には正解がないので、自分の直前の出力を次の入力に戻して進むしかありません。この方式を**自己回帰**(auto-regressive)生成と呼びます。「回帰」は第3巻で出会った regression と同じ単語で、「自分自身の過去の出力に回帰する(立ち戻る)」という意味です。論文のモデル構造の説明は、まさにこの言葉から始まります。
+
+
+> *"Given z, the decoder then generates an output sequence (y₁, ..., yₘ) of symbols one element at a time. At each step the model is auto-regressive, consuming the previously generated symbols as additional input when generating the next."*
+> — Vaswani et al., "Attention Is All You Need", Section 3 Model Architecture
+>
+> 訳: 「z を受けて、decoder は出力系列 (y₁, ..., yₘ) を1要素ずつ生成する。各ステップにおいてモデルは自己回帰的であり、次を生成する際に、それまでに生成した記号を追加の入力として消費する。」
+
+この2文は、`generate` のループをそのまま英語にしたものです。「1要素ずつ」「それまでに生成した記号を次の入力として消費する」——あなたはこれを、いま自分のコードの10行足らずとして持っています。Transformer がどれほど新しいアーキテクチャでも、**生成のやり方はこの章の seq2seq と同じ**なのです。
+
+ただし、引用の1語目に小さな違和感を残しておいてください。"Given **z**"——論文では decoder が受け取るものが $z = (z_1, \ldots, z_n)$ という**列**です。私たちの seq2seq が渡したのは $\mathbf{c}$ という1本でした。1本ではなく列を渡す。この違いこそ、6.3 の痛みへの論文の答えであり、次章の主題です。
+
+最後に、訓練と生成の非対称が残す副作用にも触れておきます。teacher forcing で育ったモデルは、訓練中つねに正解の文脈の上を歩いてきました。生成時に一度間違えると、そこから先は「訓練で一度も見たことのない、自分の誤りが混ざった文脈」を歩くことになり、誤りが連鎖しやすくなります。6.3 の長さ12の例で、崩れはじめた後の出力が正解から大きく逸れていったのは、ボトルネックにこの連鎖が重なったものです。この「訓練時と生成時で踏む地面が違う」問題は exposure bias と呼ばれ、自己回帰生成の宿命として現代のモデルにも残っています。
+
+## まとめ
+
+- 翻訳・要約・音声認識はすべて**系列変換**(sequence transduction)——系列を入れて別の系列を出すタスク。論文はその1文目から系列変換のモデルだと宣言している
+- seq2seq は「読む」と「書く」の分業: **encoder** が入力全体を文脈ベクトル $\mathbf{c}$ `(d_h,)` に要約し、**decoder** が $\mathbf{c}$ を初期状態とする言語モデルとして出力を生成する。式は第1章の連鎖分解に条件 $\mathbf{x}$ が増えただけ
+- **痛み3: 固定長ボトルネック**。入力が何文字でも $\mathbf{c}$ は固定の太さ1本。文字列反転の実測で、系列一致率は長さ4の 1.00 から長さ12の 0.00 まで単調に崩れた——訓練で毎回見ている長さの範囲内であるにもかかわらず、である
+- 訓練時は正解を decoder に入力する **teacher forcing**、生成時は自分の出力を次の入力に戻す**自己回帰生成**。この2つの非対称は exposure bias という宿命を残すが、teacher forcing の「decoder への入力が事前に全部わかる」という性質が第8巻3章の訓練ループの土台になる
+- encoder の途中の隠れ状態を「捨てない」のが次章の方向。論文の decoder が受け取る $z$ が1本ではなく**列**であることに、その答えが先に書かれている
+
+**ラスボスとの距離**: 論文 Section 3 冒頭の "the decoder then generates an output sequence ... one element at a time. At each step the model is auto-regressive" が、自分の `generate` のループとして完全に読めるようになりました。巻頭ラスボス3文のうち、残るは attention の心臓部だけです(第7章)。
+
+## 演習
+
+**問1(入力長と精度の関係をプロット)** `code/ch06/plot_length_accuracy.py` を実行し(matplotlib が必要です)、横軸を入力長 2〜12、縦軸を系列一致率とする折れ線グラフを描いてください。6.3 の表は6点でしたが、全長さで測るとカーブの形はどう見えますか。崖はどこから始まりますか。
+
+**問2(どの位置から崩れるか)** 長さ12の評価データについて、系列一致率の代わりに**出力位置ごとの**文字正解率 `(pred[:, :12] == tgt).mean(axis=0)` を測ってください。出力の何文字目から崩れますか。それは入力の何文字目に対応しますか。
+
+**問3(ボトルネックの太さを変える)** `D_H` を 8 と 128 に変えて訓練し直し、6.3 の表を作り直してください。瓶の首を太くすると、崩れ方はどう変わりますか。そして、太くすれば痛み3は「解決」したと言えるでしょうか。
+
+<details>
+<summary>略解</summary>
+
+**問1** 手元の実行では、長さ2〜4は 1.00 の平らな区間、長さ5の 0.96 からわずかに傾きはじめ、6〜9(0.81 → 0.54 → 0.26 → 0.10)で崖になり、11以降は 0.00 に張り付きます。図に見えるはずなのは「平らな台地、急な崖、底」の3部構成です。キャプションを自分の言葉で書くなら「瓶の首(D_H=32)に収まるうちは完璧、あふれた瞬間から崩れる」となるでしょう。
+
+**問2** 手元の実測では、出力位置1〜7の文字正解率は 1.00〜0.88 と高く、位置8で 0.77、以降 0.45 → 0.21 → 0.07 → 0.02 と雪崩を打ちます。反転タスクでは出力の $t$ 文字目=入力の後ろから $t$ 文字目なので、崩れているのは**入力の先頭側**——encoder が最初に読み、その後11回も上書きにさらされた、いちばん古い記憶です。6.3 の「メモを取らない通訳」の比喩が、位置別の数字としてそのまま現れます。
+
+**問3** 手元の実測では、`D_H=8` は長さ2ですら 0.24 で、ほぼ何も運べません。`D_H=128` は 1.00 / 1.00 / 1.00 / 0.99 / 0.84 / 0.42 となり、崖が右へずれます。太くすれば確かに粘ります——しかし長さ12ではやはり半分以上を落としており、入力をさらに伸ばせば必ずどこかで崖が来ます。固定長の瓶である限り、太さをいくら変えても「入力長に上限が事実上ある」という構造は消えません。構造を変える(1本ではなく列を渡す)のが第7章です。
+
+</details>

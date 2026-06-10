@@ -100,7 +100,7 @@
 | byte-pair encoding(5.1) | 2章 |
 | learned embeddings, d_model(3.4) | 3章 |
 | query / key / value という言葉 | 7章 |
-| auto-regressive(2節) | 6章 |
+| auto-regressive(3節冒頭) | 6章 |
 
 ## コードで示す箇所の方針
 

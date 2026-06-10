@@ -17,7 +17,7 @@
 | Abstract | "dispensing with recurrence and convolutions entirely" | 6巻で痛みを体感 → **7巻1章**で逐行 |
 | 1 Introduction | "sequential nature precludes parallelization" | **6巻5章**(並列化不能を実測)→ 7巻1章 |
 | 2 Background | "operations ... grows in the distance between positions" | **6巻5・7章**(長距離依存)→ 7巻1章 |
-| 2 Background | "auto-regressive" | **6巻6章**(seq2seqと生成) |
+| 3 Model Architecture 冒頭 | "auto-regressive" | **6巻6章**(seq2seqと生成) |
 | 3 図1(アーキテクチャ図) | 全体の見取り図 | 部品: 1・4・5巻 → 全体: **7巻2章** |
 | 3.1 Encoder and Decoder Stacks | N=6、d_model=512 | **7巻2章** |
 | 3.1 | LayerNorm(x + Sublayer(x)) | **5巻6章**(residual + layer norm)→ 7巻2章 |

@@ -1,0 +1,488 @@
+# 第4章 n-gram — 数えるだけの言語モデル
+
+第1章で、言語モデルという問題を立てました。これまでの単語列を条件として、次の単語の確率分布 $P(w_t \mid w_1, \ldots, w_{t-1})$ を出すこと。文全体の確率は連鎖分解でこの条件付き確率の積になり、モデルの良し悪しは perplexity(第4巻第7章の「平均分岐数」)で測れるのでした。第2章で文章をトークン列に切る道具(BPE)を作り、第3章でトークンをベクトルにする道具(埋め込み)も手に入れました。
+
+ところが、よく考えると私たちはまだ一度も、**実際に動く言語モデルを作っていません**。$P(w_t \mid w_1, \ldots, w_{t-1})$ という記号は書けるようになりましたが、この確率の値を、具体的にどう計算すればよいのでしょうか。
+
+この章では、考えうるかぎり最も素朴な方法でこの問いに答えます。**数える**のです。ニューラルネットも勾配も使いません。第3章で作ったばかりの埋め込みも、この章ではいったん引き出しにしまいます——なぜしまったものをわざわざ取り出すことになるのか、その理由をこの章の失敗が教えてくれるからです。
+
+## 4.1 直前 n−1 個だけ見る、という割り切り — 条件付き確率を頻度で推定
+
+第1章の連鎖分解をもう一度書きます。文 $w_1, w_2, \ldots, w_T$ の確率は、
+
+$$P(w_1, \ldots, w_T) = \prod_{t=1}^{T} P(w_t \mid w_1, \ldots, w_{t-1})$$
+
+各因子 $P(w_t \mid w_1, \ldots, w_{t-1})$ を求めたい。確率の推定なら、やり方はもう知っています。第4巻第1章でやったとおり、**条件に合うところに絞って、数えて、割る**です。たとえば「the cat sat on the mat という6語の次に来る単語」の分布を知りたければ、コーパスの中から「the cat sat on the mat」が現れる場所を全部探し、その直後の単語を数えればよい。
+
+では、なぜそれで終わりにできないのでしょうか。
+
+文脈が長くなると、**その文脈がコーパスに一度も現れなくなる**からです。たとえばこの段落の冒頭の「文脈が長くなると、その文脈が」という並びとまったく同じトークン列は、どれほど大きなコーパスを持ってきても、おそらく存在しません。条件に合う場所が0件なら、絞ることも数えることもできません。分母が0の割り算です。
+
+そこで、割り切ります。
+
+> **遠い過去は、忘れることにする。次の単語は、直前の $n-1$ 個だけで決まると仮定する。**
+
+$$P(w_t \mid w_1, \ldots, w_{t-1}) \approx P(w_t \mid w_{t-n+1}, \ldots, w_{t-1})$$
+
+この仮定を**マルコフ仮定**(Markov assumption)、この仮定の上に立つモデルを **n-gram 言語モデル**と呼びます。$n$ は「いくつ組で数えるか」です。$n=1$ なら文脈を一切見ないただの単語の出現率(ユニグラム)、$n=2$ なら直前1語だけ見る(バイグラム)、$n=3$ なら直前2語(トライグラム)。直前 $n-1$ 語の文脈と次の1語、合わせて $n$ 語組(gram)を数えるので n-gram です。
+
+もちろんこの仮定は嘘です。「次の単語は直前1語で決まる」が本当なら、小説の冒頭を読む意味はありません。しかし嘘のおかげで、数えられるようになります。直前1語や2語の組なら、コーパスに何度も現れるからです。
+
+### 「数えて割る」は最尤推定そのもの
+
+文脈を $c$(直前 $n-1$ 語の組)、次の単語を $w$ と書くと、推定はこうなります。
+
+$$\hat{P}(w \mid c) = \frac{\mathrm{count}(c, w)}{\mathrm{count}(c)}$$
+
+分子は「文脈 $c$ の直後に $w$ が来た回数」、分母は「文脈 $c$ が現れた回数」です。
+
+この式、見覚えがないでしょうか。第4巻第3章で、コイン投げの対数尤度を微分して出てきた答え——**最尤推定 $\hat{\theta} = k/n$、まさにあれです**。表が出る確率の最尤推定は「$n$ 回中 $k$ 回」という頻度だ、という結論でした(紛らわしいですが、この $n$ は投げた回数のことで、n-gram の $n$ とは別の文字です)。対応を並べてみます。
+
+| | コイン投げ(第4巻第3章) | n-gram |
+|---|---|---|
+| 試行 | コインを1回投げる | 文脈 $c$ の直後に単語が1つ出る |
+| 注目する結果 | 表が出る | 単語 $w$ が出る |
+| 試行回数 | $n$ 回投げた | $\mathrm{count}(c)$ 回現れた |
+| 注目の回数 | 表が $k$ 回 | $\mathrm{count}(c, w)$ 回 |
+| 最尤推定 | $\hat{\theta} = k/n$ | $\hat{P}(w \mid c) = \mathrm{count}(c,w)/\mathrm{count}(c)$ |
+
+文脈「the」を固定すると、「次に cat が出るか、出ないか」は1枚の(歪んだ)コインです。違いは、結果が表裏の2択ではなく語彙全体の $V$ 択になったことだけ——2択のベルヌーイ分布が $V$ 択に増えても、「最尤推定の答えは頻度」という結論は変わりません(導出は2択のときと同じ筋なので、この本の流儀どおり省略し、コードの assert で検算します)。
+
+つまり「数えて割る」は、面倒な理論を避けた手抜きではありません。**「観測されたデータを最ももっともらしくするパラメータを選べ」という最尤原理から、導出されて出てくる手続き**です。第4巻第1章の4文コーパスで $P(\text{cat} \mid \text{the}) = 3/8$ と数えたとき、私たちはすでに n-gram 言語モデルの最尤推定をしていたのでした。
+
+理屈は、これで全部です。数えて、割って、掛ける。さっそく作って、動かしてみましょう。
+
+## 4.2 [コード] n-gram モデルを実装し、文章を生成してみる
+
+この章のコードは6つの断片に分けて掲載しますが、上から順につなげたものがそのまま `code/ch04/ngram_lm.py` です(つなげれば全文実行できます)。
+
+まずはコーパスです。第4巻第1章の4文コーパス——the cat sat on the mat から始まるあの4文——を、同じ語彙の世界観のまま50文に育てました。さらに、モデルには一度も見せない10文を別に用意してあります。訓練データとテストデータの分割、第3巻第6章の規律です(テスト10文が何のために必要かは、4.3でわかります)。
+
+```python
+"""第6巻 第4章: n-gram 言語モデル — 数えて、生成して、perplexity で測る。
+
+本文 4.1〜4.3 のコードを1本にまとめたもの。
+- 4.1 カウント: 条件付き確率を頻度で推定(第4巻第3章の最尤推定 θ̂ = k/n の言語版)
+- 4.2 生成: n を変えて文章を生成する(初めて機械が文を書く)
+- 4.3 壁: 組合せ爆発とゼロ頻度を実測し、perplexity の表にする
+"""
+from collections import Counter, defaultdict
+
+import numpy as np
+
+rng = np.random.default_rng(42)
+
+BOS, EOS = "<s>", "</s>"  # 文頭・文末の印(語彙には EOS だけが加わる)
+
+# --- コーパス: 訓練50文。最初の4文は第4巻第1章と同じもの ---
+TRAIN_TEXT = """
+the cat sat on the mat
+the cat ate the fish
+the dog sat on the mat
+the dog chased the cat
+the cat chased the mouse
+the mouse ran to the house
+the dog ate the bone
+the bird sat on the house
+the bird saw the cat
+the cat saw the bird
+the old cat slept in the garden
+the small dog ran to the river
+the man saw the dog
+the man liked the old dog
+the woman liked the small cat
+the woman saw the bird in the garden
+the cat slept on the mat
+the dog slept in the house
+the fish swam in the river
+the bird flew to the garden
+the hungry cat ate the fish
+the hungry dog ate the bone
+the black cat sat on the house
+the white dog sat in the garden
+the mouse ate the cheese
+the cat liked the warm sun
+the dog ran to the man
+the man ran to the river
+the woman sat in the garden
+the old man slept in the house
+the small bird flew to the river
+the black dog chased the white cat
+the white cat chased the small mouse
+the mouse slept in the small house
+the fish saw the bird
+the bird ate the small fish
+the cat was hungry
+the dog was happy
+the old man was happy
+the small mouse was hungry
+the sun was warm
+the garden was quiet
+the man liked the quiet garden
+the woman liked the warm sun
+the cat saw the fish in the river
+the dog saw the mouse in the garden
+the hungry bird ate the cheese
+the black cat slept on the warm mat
+the man chased the black dog
+the woman chased the small bird
+"""
+
+# --- テスト用の10文: モデルには一度も見せない(第3巻の訓練/テスト分割と同じ規律) ---
+TEST_TEXT = """
+the white cat sat on the mat
+the hungry dog ran to the house
+the old man liked the black cat
+the dog chased the bird in the garden
+the small fish swam in the river
+the small mouse ate the cheese
+the white dog slept on the mat
+the man saw the white cat
+the old cat slept in the warm sun
+the woman saw the fish in the river
+"""
+
+train_sents = [line.split() for line in TRAIN_TEXT.strip().split("\n")]
+test_sents = [line.split() for line in TEST_TEXT.strip().split("\n")]
+assert len(train_sents) == 50 and len(test_sents) == 10
+```
+
+テストの10文は、文としては訓練コーパスのどこにもない新作です(white cat が mat に座る文は訓練側にありません)。ただし、使っている単語と2語のつながりは、すべて訓練側のどこかに登場するように作ってあります。この細工の意味も4.3で明かします。
+
+第2章で作った BPE を通したトークン列ではなく、空白区切りの英単語をそのままトークンにしている点だけ注意してください。この章の議論はトークンの切り方によらず成り立つので、いちばん目で追いやすい単位を選びました。
+
+カウントの本体はこれだけです。
+
+```python
+# === 4.1 カウント: 条件付き確率を頻度で推定 ===
+
+def ngram_counts(sents, n):
+    """文のリストから n-gram の出現を数える。
+
+    返り値は「文脈(直前 n−1 トークンのタプル)→ 次トークンの Counter」の辞書。
+    文頭には BOS を n−1 個敷き、文末には EOS を1個置く(文の終わりも予測対象)。
+    """
+    counts = defaultdict(Counter)
+    for ws in sents:
+        tokens = [BOS] * (n - 1) + ws + [EOS]
+        for i in range(n - 1, len(tokens)):
+            context = tuple(tokens[i - n + 1:i])
+            counts[context][tokens[i]] += 1
+    return counts
+
+
+def prob(counts, context, w):
+    """最尤推定 P̂(w | context) = count(context, w) / count(context, ・)"""
+    c = counts[context]
+    total = sum(c.values())
+    if total == 0:
+        return 0.0  # 文脈そのものが未観測
+    return c[w] / total
+
+
+# 第4巻第1章の4文コーパスで検算: P̂(cat | the) = 3/8(あの表と同じ数)
+counts_v4 = ngram_counts(train_sents[:4], 2)
+assert counts_v4[("the",)]["cat"] == 3          # k: 「the cat」の回数
+assert sum(counts_v4[("the",)].values()) == 8   # n: 「the ○」の回数
+assert np.isclose(prob(counts_v4, ("the",), "cat"), 3 / 8)
+
+# 50文で数え直しても、どの文脈の条件付き分布も「0以上・足すと1」を自動で満たす
+counts2 = ngram_counts(train_sents, 2)
+for context, c in counts2.items():
+    total = sum(c.values())
+    assert all(v > 0 for v in c.values())
+    assert np.isclose(sum(v / total for v in c.values()), 1.0)
+```
+
+2箇所だけ補足します。第一に、各文の頭に `<s>`(BOS)を $n-1$ 個敷いています。最初の単語にも「直前 $n-1$ 個」という文脈の席が必要だからです。第二に、文末に `</s>`(EOS)を置いて、**「文がここで終わる」ことも1つの予測対象**にしています。これがないと、モデルは文をいつ終えてよいか永遠にわかりません。
+
+assert が2グループあります。前半は第4巻第1章の手計算との一致——$k=3$、$n=8$、$\hat{P}(\text{cat} \mid \text{the}) = 3/8$。後半は、数えて割っただけの数が、どの文脈でも自動的に確率分布の資格(0以上・全部足すと1)を満たすことの確認です。
+
+### 機械に文を書かせる
+
+言語モデルは「次の単語の確率分布」を出す機械です。ならば、こう使えます。文頭の文脈から始めて、分布を1つ引き、出た単語で文脈を1語ぶん進め、また分布を引く——`</s>` が出るまで繰り返す。確率に従って引くところは、第4巻第2章で作ったサンプリングです。
+
+```python
+# === 4.2 生成: 条件付き分布からサンプリングして文を書かせる ===
+
+def generate(counts, n, max_len=20):
+    """BOS だけの文脈から始め、P̂(・| 文脈) を引いては1語ずつ進める。"""
+    context = tuple([BOS] * (n - 1))
+    out = []
+    while len(out) < max_len:
+        dist = counts[context]
+        words = sorted(dist)                                # 順序を固定(再現性)
+        p = np.array([dist[w] for w in words], dtype=float)
+        p = p / p.sum()
+        w = str(rng.choice(words, p=p))
+        if w == EOS:
+            break
+        out.append(w)
+        if n > 1:
+            context = context[1:] + (w,)
+    return " ".join(out)
+
+
+train_set = {" ".join(ws) for ws in train_sents}
+
+print("=== 生成(各 n で10文ずつ。[copy] は訓練コーパスの丸写し) ===")
+copied = {}
+for n in [1, 2, 3, 4]:
+    counts_n = ngram_counts(train_sents, n)
+    gens = [generate(counts_n, n) for _ in range(10)]
+    copied[n] = sum(g in train_set for g in gens)
+    print(f"--- n = {n}(丸写し {copied[n]}/10) ---")
+    for g in gens:
+        print("  " + g + ("   [copy]" if g in train_set else ""))
+
+# n を上げると文は正しくなるが、それは「上手くなった」のではなく「暗記に近づいた」
+assert copied[1] == 0 and copied[2] == 0
+assert copied[4] >= 6
+```
+
+実行すると、$n$ ごとに10文ずつ印字されます。手元の実行結果(乱数の種は42)から、いくつか拾ってみましょう。まず $n=1$、文脈をまったく見ないユニグラムです。
+
+```text
+the liked the the
+man happy the sun the liked cat river
+ate the the was fish happy man bird
+```
+
+完全な単語サラダです。単語の出やすさだけは合っている(the が多い)ものの、並び順の概念がありません。10文のうち1つは、開始直後に `</s>` を引いて**空文**になりました。文脈を見ないので、「まだ1語も書いていないのに文を終える」ことを止められないのです。
+
+では $n=2$、直前1語だけ見るバイグラム。
+
+```text
+the cat chased the cat
+the dog sat on the mouse ate the cat
+the woman saw the dog was quiet garden
+the black dog chased the dog ran to the river
+```
+
+ここで少し立ち止まってください。**いま、機械が文を書きました。**「the cat chased the cat」(猫が猫を追いかけた)——主語があり、動詞があり、目的語があり、ちゃんと終わっています。訓練コーパスにこの文はありません。モデルが、数えた確率から組み立てた新しい文です。このシリーズで初めて、機械があなたに向かって文章を生成した瞬間です。
+
+そして、すぐ下の文たちが愉快です。「the dog sat on the mouse ate the cat」——犬がネズミの上に座っ……て猫を食べた? どの**継ぎ目**も正しいことを確かめてください。dog sat も、sat on も、on the も、the mouse も、mouse ate も、訓練コーパスに実在するつながりです。しかし2語より広い範囲を見渡す目がないので、「sat on の主語の文はもう終わるべきだ」という判断ができず、別の文の断片に乗り換えてしまう。バイグラムは文豪ではなく、しりとりの名人です。1手ごとのつながりは完璧でも、全体の行き先は誰も考えていません。
+
+$n=3$(トライグラム)に上げると、見違えます。
+
+```text
+the man chased the small cat
+the old man slept in the garden
+the cat sat on the house
+the woman saw the mouse slept in the river
+```
+
+ほとんどの文が文法的に正しく、しかも丸写しではない新作です(「the cat sat on the house」は訓練側にない文です)。それでも4つめのような「見た the mouse が眠った川の中で……?」という乗り換え事故は、2語の窓では防ぎきれずに残ります。
+
+ならば $n=4$ にすれば完璧では? 出力はこうです。
+
+```text
+the cat ate the fish          [copy]
+the black cat slept on the warm mat   [copy]
+the man saw the dog           [copy]
+the black dog chased the white cat chased the mouse
+```
+
+10文中7文に `[copy]` が付きました。**訓練コーパスの文の、一言一句そのままの再生**です。文は正しくなりました。しかしそれは、モデルが言語を覚えたからではありません。3語の文脈はこの小さなコーパスにほぼ1回ずつしか現れないので、「数えて割る」の分布がほとんど1点に集中し、見た文をなぞることしかできなくなったのです。上手くなったのではなく、**暗記に近づいた**。
+
+$n$ が小さいと壊れた文を書き、$n$ を大きくすると暗記し始める。この不穏な気配を、次節で数字にします。
+
+## 4.3 壁: n を増やすと組合せ爆発でデータが足りない — 遠くの文脈は構造的に見えない
+
+n-gram モデルの実体は「$n$ 語組ごとの回数表」です。では、その表の行は何行あり得るでしょうか。語彙サイズを $V$ とすると、$n$ 語組の作り方は $V^n$ 通り。$V$ を底とする指数関数です。**組合せ爆発**(combinatorial explosion)と呼ばれる、指数関数のいつもの凶暴さがここに出ます。私たちのおもちゃのコーパスで実測してみましょう。
+
+```python
+# === 4.3 壁(その1): 組合せ爆発 — V^n と「実際に観測された異なり n-gram 数」 ===
+
+vocab = sorted({w for ws in train_sents for w in ws})
+V = len(vocab) + 1  # +1 は EOS(BOS は予測対象でないため数えない)
+n_tokens = sum(len(ws) + 1 for ws in train_sents)  # 訓練中の n-gram の延べ個数(EOS 込み)
+assert V == 37 and n_tokens == 348
+
+print("\n=== 組合せ爆発: 可能な n-gram の数 vs 観測された n-gram の数 ===")
+print(f"語彙サイズ V = {V}(EOS 込み), 訓練トークン数 = {n_tokens}")
+seen = {}
+for n in [1, 2, 3, 4, 5]:
+    counts_n = ngram_counts(train_sents, n)
+    seen[n] = sum(len(c) for c in counts_n.values())  # 異なり n-gram の個数
+    print(f"  n = {n}: V^n = {V ** n:>12,} 通り | 観測 {seen[n]:>3} 通り"
+          f"(カバー率 {seen[n] / V ** n:.2%})")
+
+# 観測できる異なり n-gram は最大でも延べ個数 n_tokens を超えられない(必然の頭打ち)
+assert all(seen[n] <= n_tokens for n in [1, 2, 3, 4, 5])
+assert seen[5] / V ** 5 < 1e-5  # n = 5 では可能な組合せの 0.001% も見えていない
+```
+
+出力はこうなります。
+
+```text
+語彙サイズ V = 37(EOS 込み), 訓練トークン数 = 348
+  n = 1: V^n =           37 通り | 観測  37 通り(カバー率 100.00%)
+  n = 2: V^n =        1,369 通り | 観測 115 通り(カバー率 8.40%)
+  n = 3: V^n =       50,653 通り | 観測 188 通り(カバー率 0.37%)
+  n = 4: V^n =    1,874,161 通り | 観測 227 通り(カバー率 0.01%)
+  n = 5: V^n =   69,343,957 通り | 観測 247 通り(カバー率 0.00%)
+```
+
+左の列($V^n$)は $n$ が1増えるたびに37倍に膨らみます。一方、右の列(実際に観測した異なり $n$ 語組)は、115、188、227、247……と頭打ちです。当然で、コーパスから取り出せる $n$ 語組は延べ348個しかなく、観測できる種類数はそれを絶対に超えられません。**必要な升目は指数で増えるのに、埋められる升目はコーパスの長さで頭打ち**——表は $n$ とともに、ほとんど全部が空欄のスカスカの表になっていきます。これが**スパースネス**(sparseness)です。
+
+おもちゃだからでは、と思うかもしれません。逆です。実物はもっと悲惨です。原論文が使う語彙は BPE で約37,000トークン(第2章で覗いた Section 5.1)。$37{,}000^2$ は約14億、$37{,}000^3$ は約 $5 \times 10^{13}$。数十億トークン規模のコーパス(英語版 Wikipedia 全文がこの規模です)を全部数えても、トライグラムの可能な升目の1万分の1ほどの延べ語数にしかなりません。$n=5$ ならもう、人類がこれまでに書いたすべてのテキストを束ねても、表の空欄は埋まりません。
+
+### ゼロ頻度問題: 空欄は「確率0」と宣告する
+
+空欄だらけでも、よく出る組み合わせさえ埋まっていればよいのでは? そうはいかないことを、隠しておいたテスト10文が教えてくれます。
+
+```python
+# === 4.3 壁(その2): ゼロ頻度 — テスト文の n-gram のうち、訓練で一度も見ていない割合 ===
+
+print("\n=== ゼロ頻度: テスト10文のうち訓練で確率 0 になる n-gram の割合 ===")
+zero_rate = {}
+for n in [1, 2, 3, 4]:
+    counts_n = ngram_counts(train_sents, n)
+    zeros, total = 0, 0
+    for ws in test_sents:
+        tokens = [BOS] * (n - 1) + ws + [EOS]
+        for i in range(n - 1, len(tokens)):
+            p = prob(counts_n, tuple(tokens[i - n + 1:i]), tokens[i])
+            zeros += (p == 0.0)
+            total += 1
+    zero_rate[n] = zeros / total
+    print(f"  n = {n}: {zeros:>2}/{total} = {zero_rate[n]:.1%}")
+
+assert zero_rate[1] == 0.0 and zero_rate[2] == 0.0  # 1・2-gram は全部見たことがある
+assert zero_rate[3] > 0.0                           # 3-gram で初めて「見たことがない」が出る
+assert zero_rate[4] > zero_rate[3]                  # n を増やすほど悪化する
+```
+
+```text
+  n = 1:  0/81 = 0.0%
+  n = 2:  0/81 = 0.0%
+  n = 3: 12/81 = 14.8%
+  n = 4: 24/81 = 29.6%
+```
+
+テスト文は、単語と2語のつながりはすべて訓練側に登場するように作ってあったので、$n=1,2$ のゼロは0件です。ところが $n=3$ になった途端、約15%の場所で $\hat{P} = 0$ が出ます。たとえばテスト文の「the white cat **sat**」。訓練コーパスに white cat は2回ありますが、その直後は chased と文末だけで、sat は一度もありません。回数表の升目が0——すると最尤推定は、この完全に自然な英語に**確率0、すなわち「絶対に起こらない」と宣告します**。
+
+この振る舞い、第4巻第3章の演習問4で一度見ています。コインを3回投げて3回とも表だったとき、最尤推定は $\hat{\theta} = 1$、「裏は永遠に出ない」と断言するのでした。最尤推定は手元のデータを全面的に信頼する原理なので、データが薄いと極端な値に振り切れる——n-gram の表はまさに「ほぼすべての升目でデータが薄い」状況で、あの病気が全升目で発症します。これを**ゼロ頻度問題**(zero-frequency problem)と呼びます。
+
+確率0の宣告は、評価を直撃します。perplexity は $\log \hat{P}$ の平均から作られるので(第1章)、どこか1箇所でも $\hat{P} = 0$ を踏めば $\log 0 = -\infty$、文全体の perplexity は無限大です。測ってみましょう。
+
+```python
+# === 4.3 壁(その3): perplexity — 訓練では下がり続け、テストでは無限大に発散 ===
+
+def perplexity(counts, n, sents):
+    """PP = exp(−(1/N) Σ log P̂)。第4巻第7章の「平均分岐数」をコーパスで測る。"""
+    log_sum, N = 0.0, 0
+    for ws in sents:
+        tokens = [BOS] * (n - 1) + ws + [EOS]
+        for i in range(n - 1, len(tokens)):
+            p = prob(counts, tuple(tokens[i - n + 1:i]), tokens[i])
+            if p == 0.0:
+                return float("inf")  # log 0 = −∞。一発で perplexity 全体が無限大
+            log_sum += np.log(p)
+            N += 1
+    return float(np.exp(-log_sum / N))
+
+
+print("\n=== perplexity(平均分岐数): 訓練 vs テスト ===")
+pp_train, pp_test = {}, {}
+for n in [1, 2, 3, 4]:
+    counts_n = ngram_counts(train_sents, n)
+    pp_train[n] = perplexity(counts_n, n, train_sents)
+    pp_test[n] = perplexity(counts_n, n, test_sents)
+    print(f"  n = {n}: 訓練 {pp_train[n]:7.2f} | テスト {pp_test[n]:7.2f}")
+
+# 訓練データ上では、n を増やすほど perplexity は単調に下がる(丸暗記に向かう)
+assert pp_train[1] > pp_train[2] > pp_train[3] > pp_train[4]
+# テストでは 2-gram が最良で、3-gram 以降はゼロ頻度を踏んで無限大
+assert pp_test[2] < pp_test[1]
+assert pp_test[3] == float("inf") and pp_test[4] == float("inf")
+
+print("\nok: すべての assert を通過しました")
+```
+
+```text
+  n = 1: 訓練   18.52 | テスト   20.48
+  n = 2: 訓練    3.73 | テスト    3.76
+  n = 3: 訓練    2.42 | テスト     inf
+  n = 4: 訓練    1.90 | テスト     inf
+```
+
+この小さな表は、よくできた縮図なので、じっくり読んでください。
+
+- **訓練の列**は $n$ とともに単調に下がります(18.5択 → 3.7択 → 2.4択 → 1.9択)。$n$ を上げるほど、訓練データの「次の1語」は当てやすくなる。4.2で見た丸写し生成の、数字の側の顔です。
+- **テストの列**は $n=2$ の3.76が最良で、$n=3$ から先は無限大に発散します。訓練でどれだけ成績が良くても、新しい文の前では確率0を踏んで即死する。
+- 訓練に強く、テストに弱い——**第3巻第6章の過学習、そのもの**です。回数表というモデルは、$n$ を上げるほど「訓練データの暗記」に向かい、汎化をまったくしません。
+
+(空欄に小さな確率を配り直してゼロ頻度を回避する**スムージング**(smoothing)という応急処置の一族があり、n-gram の時代には精巧に発展しました。しかし空欄が指数的に増えていく本体の病気は治せないので、この本では踏み込みません——最短測地線です。興味のある人は演習の問2の後で Kneser-Ney smoothing を調べてみてください。)
+
+### もうひとつの壁: 遠くは構造的に見えない
+
+仮に、無限のコーパスが手に入って表が全部埋まったとしましょう。それでも n-gram には越えられない壁が残ります。**直前 $n-1$ 語より遠くは、原理的に、何があっても見えない**のです。
+
+> the **cat** that the dog chased in the garden yesterday **was** hungry
+
+was の形(単数か複数か)を決めているのは、9語前の cat です。トライグラムがこの位置で見ているのは「yesterday was」の2語だけ。主語が cat だった事実は、窓の外に流れ去っています。これを数える方式のまま解決するには $n$ を10以上にするしかなく、その瞬間 $V^n$ の爆発に押し潰されます。**近くしか見ないから数えられる。数えられるから遠くが見えない。**割り切りの代償は、構造的です。
+
+この「遠くの依存関係をどう運ぶか」という問いは、この巻の残り全部を貫く主題になります。覚えておいてください。
+
+## 4.4 教訓: 「数える」のではなく「一般化する」必要がある
+
+壁の正体を、もう一段掘ります。なぜ回数表は、見たことのない「white cat sat」に確率0を付けたのでしょうか。訓練コーパスには black cat sat も、white dog sat もあったのに、です。
+
+回数表にとって、文脈「white cat」と文脈「black cat」は、**たまたま似た文字列の、無関係な2つの行**だからです。一方の行で学んだことは、もう一方の行に1ミリも染み出しません。私たち人間が「white cat sat は大丈夫だろう」と思えるのは、white と black が似た言葉で、どちらも cat の振る舞いを変えないと知っているからです。回数表には「似ている」という概念の置き場がそもそもありません。
+
+ここで、第3章でいったん引き出しにしまったものを取り出します。**埋め込み**です。第3章で私たちは、単語をベクトルにすると「似た単語は近いベクトルになる」ことを見ました。cat と dog は近く、white と black は近い。ならば——
+
+- 文脈を、回数表の行番号(記号の組)としてではなく、**ベクトル**として表し、
+- 「次の単語の分布」を、表引きではなく、そのベクトルから計算する**パラメータ付き関数** $P = f(\text{文脈ベクトル};\ W)$ にすれば、
+
+「black cat sat」での学習が、パラメータ $W$ を通じて、近所のベクトルである「white cat sat」の予測にも自動的に効くはずです。見たことのある事例から、見たことのない事例へ知識が染み出すこと——第3巻第6章でこれを呼ぶ言葉を学びました。**汎化**(generalization)です。
+
+教訓を一行にまとめます。
+
+> **言語モデルは、数えるのではなく、一般化しなければならない。** そして一般化の道具立て——パラメータ付き関数、損失最小化、埋め込み——は、第3巻と第5巻と第3章で、すでに全部揃っている。
+
+数える代わりに、埋め込みを入力とするニューラルネットワークに「次の単語当て」を学習させる。それが次章の主役、RNN(recurrent neural network)です。さらに RNN は、固定幅 $n-1$ の窓の代わりに「ここまで読んだ要約」を持ち回ることで、もうひとつの壁(遠くが見えない)にも挑みます。次章の5.2で、今日作った n-gram の perplexity が実際に打ち破られるところを見届けてください。
+
+最後に、巻頭のラスボスの最初の一文を覗いておきます。
+
+> *"Recurrent neural networks, long short-term memory and gated recurrent neural networks in particular, have been firmly established as state of the art approaches in sequence modeling and transduction problems such as language modeling and machine translation."*
+> — Vaswani et al., "Attention Is All You Need", Section 1 Introduction(参照番号は省略)
+>
+> 訳: リカレントニューラルネットワーク、とりわけ LSTM とゲート付きリカレントネットワークは、言語モデリングや機械翻訳といった系列モデリング・系列変換の問題において、最先端の手法としての地位を確立してきた。
+
+"language modeling" が何の問題かを、あなたはもう知っています。そして、この文が「数える」方式に触れもせず、いきなりリカレントニューラルネットワークから始まる理由も、今日の壁を見たあなたには想像がつくはずです。
+
+## まとめ
+
+- n-gram 言語モデルは「次の単語は直前 $n-1$ 個だけで決まる」という**マルコフ仮定**の割り切りで、条件付き確率を数えられるようにしたモデル。推定は $\hat{P}(w \mid c) = \mathrm{count}(c,w)/\mathrm{count}(c)$ で、これは**第4巻第3章の最尤推定 $\hat{\theta} = k/n$ そのもの**
+- 数えた分布からサンプリングを繰り返すだけで、機械が文を**生成**できる。$n=2$ は継ぎ目だけ正しい文を書き、$n$ を上げると正しくなるが、それは暗記への接近だった
+- $n$ 語組の升目は $V^n$ 通り(**組合せ爆発**)。埋められる升目はコーパス長で頭打ちなので、表は指数的にスカスカになり(**スパースネス**)、未見の組に確率0を宣告する**ゼロ頻度問題**が起きる。perplexity は訓練で単調改善・テストで無限大——第3巻の**過学習**の言語版
+- たとえデータが無限でも、直前 $n-1$ 語より遠くは**構造的に見えない**
+- 教訓: 回数表には「似ている」の置き場がなく、汎化しない。**数えるのではなく、埋め込み+パラメータ付き関数で一般化する**必要がある → 次章 RNN へ
+
+**ラスボスとの距離**: 論文 Introduction の第1文にある "language modeling" という問題を自分の手で一度解き、その最初の解の限界まで踏破しました。次章で、第1文の主語 "Recurrent neural networks" に到達します。
+
+## 演習
+
+**問1**(手で数える) 第4巻第1章の4文コーパス(`train_sents[:4]`)について、バイグラムの最尤推定 $\hat{P}(\text{sat} \mid \text{cat})$ と $\hat{P}(\text{on} \mid \text{sat})$ を、コードを使わず数えて求めてください(文末の `</s>` も1つの結果として数えること)。それぞれについて、コイン投げの $\hat{\theta} = k/n$ の $k$ と $n$ に当たる数も明示してください。
+
+**問2**(n を変えて生成文と perplexity を比較 — この章の主実験) `ngram_lm.py` の生成ループと perplexity ループの `[1, 2, 3, 4]` を `[1, 2, 3, 4, 5]` に変えて実行し、(a) 生成文の丸写し率、(b) 訓練 perplexity、(c) テスト perplexity がそれぞれどう動くかを表にまとめてください。そのうえで「このコーパスにとって最良の言語モデルはどれか」を、自分の言葉で一文で答えてください。
+
+**問3**(文の確率と perplexity を手で) 4文コーパスのバイグラムモデルで、文 "the cat ate the fish" の確率を連鎖分解で手計算してください(`<s>` から `</s>` まで6つの因子があります)。さらにその文1つの perplexity を計算してください。きれいな整数になります。
+
+**問4**(壁の大きさを見積もる) 本文の例文 "the cat that the dog chased in the garden yesterday was hungry" で、cat と was の一致をトライグラムならぬ「$n$-gram」で捉えるには、$n$ はいくつ必要ですか。また、論文と同じ語彙サイズ $V = 37{,}000$ のとき、その $n$ に対する $V^n$ はおよそ10の何乗になりますか($\log_{10} 37{,}000 \approx 4.57$ を使ってよい)。出てきた数を、世界の総人口($\approx 10^{10}$)や1兆($10^{12}$)トークン規模の現代のコーパスと比べて、一言で批評してください。
+
+<details>
+<summary>略解</summary>
+
+**問1** cat は4文中3回現れ、直後は sat、ate、`</s>`(4文目の文末)が1回ずつ。よって $\hat{P}(\text{sat} \mid \text{cat}) = 1/3$($k=1,\ n=3$)。sat は2回現れ、直後はどちらも on。よって $\hat{P}(\text{on} \mid \text{sat}) = 2/2 = 1$($k=2,\ n=2$)。後者は「sat の次は絶対に on」という断言で、たった2回の観測でデータを全面信頼する最尤推定の性格(第4巻第3章 演習問4)がもう顔を出しています。
+
+**問2** 実行すると、(a) 丸写し率は $n=4$ の 7/10 から $n=5$ では 10/10 になり、生成文の全部が訓練文の再生になります。(b) 訓練 perplexity は単調に下がり続け、$n=5$ で約1.78(各語ほぼ「迷いなし」= 暗記の完成)。(c) テスト perplexity は $n=2$ の3.76が最良のまま、$n \geq 3$ はすべて無限大。最良のモデルの答え方の例: 「テストという公平な物差しで測るかぎり、**たった1語前しか見ないバイグラムが最良**」。$n$ を上げる正攻法が裏目にしか出ない——この行き止まり感が、次章でニューラルに乗り換える需要そのものです。
+
+**問3** 因子は順に $\hat{P}(\text{the} \mid \langle s\rangle) = 4/4 = 1$、$\hat{P}(\text{cat} \mid \text{the}) = 3/8$、$\hat{P}(\text{ate} \mid \text{cat}) = 1/3$、$\hat{P}(\text{the} \mid \text{ate}) = 1/1 = 1$、$\hat{P}(\text{fish} \mid \text{the}) = 1/8$、$\hat{P}(\langle/s\rangle \mid \text{fish}) = 1/1 = 1$。積は $\frac{3}{8} \cdot \frac{1}{3} \cdot \frac{1}{8} = \frac{1}{64}$。perplexity は確率の幾何平均の逆数なので $\left(\frac{1}{64}\right)^{-1/6} = 64^{1/6} = 2$。「1語あたり平均2択」——6つの因子のうち4つが1択(確率1)で、残る2箇所の迷いが全体を perplexity 2 に押し上げている、と読めます。
+
+**問4** was から見て cat は9語前なので、文脈が9語必要、つまり $n - 1 \geq 9$ で $n \geq 10$。$V^n = 37{,}000^{10} = 10^{4.57 \times 10} \approx 10^{46}$。総人口($10^{10}$)の1人1人が1兆($10^{12}$)トークンのコーパスを持ち寄っても延べ $10^{22}$ トークン——升目の数 $10^{46}$ の前では、誤差ですらありません。批評の例: 「数える方式にとって、10語先を見ることは『もっとデータを集める』では永遠に届かない距離である」。
+
+</details>
