@@ -164,15 +164,16 @@ print("=== 5.2a 第3巻4章の線形回帰を autograd で ===")
 
 
 def make_regression_data():
-    """第3巻2章と同一の合成データ(50点)。真の規則 y = 2x + 1 + ノイズ。"""
+    """第3巻2章と同一の合成データ(勉強時間→点数、20人)。真の規則 y = 7x + 20 + ばらつき(標準偏差6)。"""
     rng = np.random.default_rng(42)
-    X = rng.uniform(0.0, 2.0, size=50)
-    y = 2.0 * X + 1.0 + rng.normal(0.0, 0.5, size=50)
+    X = rng.uniform(0.0, 9.0, size=20)
+    y = 7.0 * X + 20.0 + rng.normal(0.0, 6.0, size=20)
     return X, y
 
 
 X_reg, y_reg = make_regression_data()
 n_reg = len(X_reg)
+assert np.allclose(X_reg[:3], [6.96560444, 3.94990596, 7.72738128])  # 第3巻と同じ20人
 
 
 def mse_loss_value(w, b, X, y):
@@ -206,10 +207,10 @@ assert np.allclose(b.grad, grad_b_hand, atol=1e-9)
 assert np.allclose(w.grad, grad_w_num, atol=1e-6)    # 自動微分 = 実測の傾き
 assert np.allclose(b.grad, grad_b_num, atol=1e-6)
 
-# --- 訓練: 第3巻4.2と同じ 4拍子・同じ lr・同じステップ数 ---
+# --- 訓練: 第3巻4.2と同じ 4拍子・同じ lr(0.01。0.03 を超えると発散するのも同じ) ---
 w, b = Value(0.0), Value(0.0)
-lr = 0.1
-for step in range(1000):
+lr = 0.01
+for step in range(20000):
     loss = mse_loss_value(w, b, X_reg, y_reg)   # 1. forward + 2. loss
     w.grad, b.grad = 0.0, 0.0                   # 3. gradient
     loss.backward()
@@ -217,7 +218,7 @@ for step in range(1000):
     b.data -= lr * b.grad
 
 print("  学習結果: w = {:.6f}, b = {:.6f}(第3巻4.4の解析解と一致するか?)".format(w.data, b.data))
-assert np.allclose([w.data, b.data], [2.030190, 0.884329], atol=1e-4)  # 解析解(第3巻4.4)
+assert np.allclose([w.data, b.data], [6.7221, 22.0922], atol=1e-3)  # 解析解(第3巻4.4)
 print("  ok: 勾配の式を1行も書かずに、第3巻と同じ答えに着いた")
 
 print("=== 5.2b 第3巻エピローグの分類を、悪い初期値から log loss で ===")
