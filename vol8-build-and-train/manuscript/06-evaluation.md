@@ -1,0 +1,422 @@
+# 第6章 評価と Results の読解 — Table 2・3 を読む
+
+第5章で、縮小版の Transformer を実際に訓練しました。loss 曲線は下がり、greedy や beam search で文も出てくるようになり、attention マップには「どこを見ているか」まで写りました。ここまでくると、言いたくなります——「うまくいった」と。
+
+ところで、「うまくいった」とは、いくつのことでしょうか。
+
+検証 loss なら数字があります。しかし loss は「次の1トークンの迷い」の量であって、翻訳が読み物として良いかどうかとは別の話です。第7巻1章で、私たちは論文 Introduction の「28.4 BLEU」という数字の前で立ち止まり、「BLEU の中身は第8巻で精算する」と約束しました。この章がその精算です。BLEU という物差しを自分の手で作り、自分のモデルに当て、それから論文の Section 6 Results——Table 2 と Table 3——を読み切ります。ここを読み終えると、論文の未読部分はなくなります。
+
+## 6.1 BLEU の仕組み — n-gram 一致(第6巻4章の n-gram が評価指標として再登場)。万能ではないという注意
+
+まず問いから立てます。翻訳の「正解率」は、なぜ素直に測れないのでしょうか。
+
+分類問題なら、正解はラベル1個でした(第4巻)。ところが翻訳の正解は1つではありません。同じドイツ語文に対して、正しい英訳は何通りもあります。「出力が正解と完全一致したか」で採点すると、まともな翻訳のほとんどが0点になってしまう。かといって人間が1文ずつ採点するのは、高くつき、遅く、採点者によって揺れ、何より**再現しません**。研究の競走には、誰が測っても同じ値が出る、安くて速い物差しが必要です。
+
+2002年に提案された **BLEU**(bilingual evaluation understudy)の発想はこうです。**人間のプロが作った参照訳(reference)を正解見本として置き、候補文(モデルの出力)と参照訳の「部分的な重なり」を数えて点にする。**そして「部分的な重なり」を数える単位が——n-gram です。
+
+第6巻4章を思い出してください。n-gram は「数えるだけの言語モデル」でした。あの章の結論は手厳しいものでした: 数えるだけでは汎化できず、言語を**作る**側としては行き止まりである、と。その n-gram が、ここで評価指標として再登場します。配役が変わったのです。**測るだけなら、汎化は要りません。**目の前の候補文と参照訳の重なりを数え上げる仕事に、見たことのない文への一般化は不要で、必要なのは再現性と速さ——まさに「数えるだけ」の長所です。作る側として引退した道具が、審判として戻ってくる。シリーズでいちばん綺麗な再就職かもしれません。
+
+### unigram precision と、最初のズル
+
+いちばん素朴な案から始めます。候補文の各単語のうち、参照訳にも現れるものの割合(unigram precision)を点にしてみましょう。
+
+> 参照訳: the cat sat on the mat
+> 候補文: the cat sat on the rug
+
+候補文の6語のうち、rug 以外の5語は参照訳にあります。5/6。悪くない物差しに見えます。
+
+しかし、この物差しは1分でハックできます。候補文を「the the the the the the the」にすると、7語全部が参照訳に現れるので 7/7、満点です。中身が何もないのに。
+
+そこで BLEU は数え方に上限を付けます。**候補文の中の各 n-gram の一致数は、参照訳でのその n-gram の出現回数を超えてカウントしない**(clip)。参照訳に the は2回しかないので、the を7回書いても一致は2までです: 2/7。この上限付きの精度を **modified n-gram precision** と呼びます。第6巻4章で作った `ngram_counts`(数える)に、`min`(頭打ち)を1つ足しただけの仕掛けです。
+
+### 1-gram から 4-gram まで — 単語の選択と、語順
+
+unigram は「単語の選択が合っているか」しか見ません。語順がめちゃくちゃでも単語さえ合えば高得点です。そこで n を 1, 2, 3, 4 と動かして、それぞれの modified precision $p_1, p_2, p_3, p_4$ を測ります。長い n-gram が一致するのは、単語が合っているだけでなく**連なり方**——語順、言い回しの自然さ——が合っているときです。先ほどの rug の例で4つ全部を数えてみます。
+
+| $n$ | 候補文の n-gram 数 | 一致(clip 後) | $p_n$ |
+|---|---|---|---|
+| 1 | 6 | 5 | 5/6 |
+| 2 | 5 | 4 | 4/5 |
+| 3 | 4 | 3 | 3/4 |
+| 4 | 3 | 2 | 2/3 |
+
+外した単語は rug 1個なのに、$n$ が長くなるほど精度が落ちていくのがわかります。1語の誤りは、それを含むすべての n-gram を道連れにするからです($n=4$ なら rug を含む末尾の窓が全部外れる)。4つの精度は**幾何平均**でまとめます。
+
+$$p_1 \cdot p_2 \cdot p_3 \cdot p_4 = \frac{5}{6} \cdot \frac{4}{5} \cdot \frac{3}{4} \cdot \frac{2}{3} = \frac{1}{3}, \qquad \left(\frac{1}{3}\right)^{1/4} \approx 0.760$$
+
+慣習として100倍した値で報告するので、この候補文は **76.0** です。論文の「28.4」は、この物差しの上の数字だったわけです(なぜ算術平均でなく幾何平均か——どれか1つの $p_n$ が壊滅的なら全体も壊滅的であってほしいからです。$p_4 = 0$ なら積は0。掛け算の非情さは、第6巻4章の連鎖分解で見たとおりです)。
+
+### 2つ目のズルと brevity penalty
+
+精度を上げるもう1つのズルが残っています。**自信のある部分しか書かない**ことです。
+
+> 候補文: the cat sat on the
+
+これは参照訳の先頭5語そのものなので、$p_1$ から $p_4$ まで**すべて 1.0**、幾何平均は満点です。翻訳としては尻切れなのに。
+
+分類のときなら、こういうサボりは recall(取りこぼしのなさ)で捕まえるところです。しかし参照訳が複数あると「回収すべき正解の総量」が定義しづらい——そこで BLEU は recall の代役として、長さへの罰を直接置きます。候補側の総トークン数を $c$、参照訳側の総トークン数(候補と長さが最も近い参照訳を採る)を $r$ として、
+
+$$\mathrm{BP} = \begin{cases} 1 & (c > r) \\ e^{\,1 - r/c} & (c \le r) \end{cases}$$
+
+短いほど指数的に罰が重くなり、参照訳より長い分には罰しません(長すぎは precision の側が勝手に下がるからです)。先の尻切れ候補は $c=5, r=6$ なので $\mathrm{BP} = e^{-0.2} \approx 0.819$、つまり満点の精度でも 81.9 止まりです。まとめると、
+
+$$\mathrm{BLEU} = \mathrm{BP} \cdot \exp\!\left(\sum_{n=1}^{4} \frac{1}{4} \log p_n\right)$$
+
+clip が「水増し」を、BP が「サボり」を、それぞれ潰す。BLEU の設計は、この2つのズルへの対策として読むとすっきり覚えられます。
+
+もう1つ、実務上の急所があります。BLEU は**コーパス単位**の指標です。文ごとに BLEU を計算して平均するのではなく、$p_n$ の分子(clip 済み一致数)と分母(候補の n-gram 総数)を検証セット全体で合算してから割ります。理由は第6巻4章で痛い目を見たゼロ頻度と同じです——短い文では 4-gram の一致がたまたま0本になることが珍しくなく、その瞬間 $\log 0 = -\infty$ でその文の点は即死します。合算しておけば、1文のゼロは分子の0として穏やかに効くだけで、全体は死にません。
+
+### 万能ではない、という注意
+
+BLEU は意味も文法も知りません。見ているのは文字どおりの重なりだけです。これが具体的にどう失敗するか、1つ見ておきます。
+
+> 参照訳: the cat sat on the mat
+> 候補文: on the mat sat the cat
+
+倒置のかかった、文法的に正しい英文で、意味も参照訳と同じです。unigram precision は 6/6 の満点。しかし 4-gram は1本も一致せず($p_4 = 0/3$)、幾何平均ごと **BLEU は 0** になります。語順に許される自由を、この物差しは「全部間違い」と裁くのです。意味の同等性も同様で、参照訳が mat の文に対して候補が rug でも carpet でも、同義かどうかにかかわらず一律に0カウントです。参照訳を複数用意すれば(clip の上限を「参照訳ごとの出現回数の最大値」に取ることで)言い換えへの当たりは多少柔らかくなりますが、原理は変わりません。
+
+それでも BLEU は2017年当時の翻訳研究の共通通貨でした。安く、速く、誰が測っても同じ値が出て、そして**人手評価との相関が(コーパス単位では)それなりに高い**。完璧な物差しではなく、癖を知った上で使う物差しです。私たちがこれから Table 2 を読むのに必要なのは、まさにその「癖を知っている」状態です。
+
+## 6.2 [コード] 自作モデルの perplexity / BLEU を測る
+
+物差しを実装します。perplexity の側に新しい道具は要りません。第4巻7.5で「エントロピーの指数 = 平均分岐数」として導入し、第6巻4章で n-gram モデルを測ったあの量は、訓練ループが報告する検証 loss(トークンあたり平均 cross-entropy)から $\mathrm{PP} = e^{\mathrm{loss}}$ の1行で出ます。新しく作るのは BLEU です。`code/ch06/bleu.py` の全文を載せます。PyTorch の出番はありません——数えるだけですから、`Counter` と `math` で足ります。
+
+```python
+"""第8巻 第6章 6.2: BLEU をフルスクラッチ実装する。
+
+BLEU (Papineni et al., 2002) = modified n-gram precision の幾何平均 × brevity penalty
+- modified precision: 候補文の n-gram の一致を、参照訳での出現回数を上限(clip)に数える
+- brevity penalty: 短すぎる候補文への罰
+- corpus-level: 分子・分母をコーパス全体で合算してから割る(文ごとの BLEU の平均ではない)
+
+第6巻4章の n-gram(数えるだけの言語モデル)が、評価指標として再登場している。
+実行: python3 bleu.py で手計算例との一致を自己点検。テスト本体は test_bleu.py。
+"""
+import math
+from collections import Counter
+
+
+def ngram_counts(tokens, n):
+    """トークン列に含まれる n-gram を数える(第6巻4章と同じ「数えるだけ」)。"""
+    return Counter(tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1))
+
+
+def modified_precision_counts(candidate, references, n):
+    """modified n-gram precision の(分子, 分母)を返す。
+
+    あえて割らずに返す: corpus BLEU は文ごとの比を平均するのではなく、
+    分子・分母をコーパス全体で合算してから1回だけ割る(ここが急所)。
+    """
+    cand = ngram_counts(candidate, n)
+    if not cand:
+        return 0, 0  # 候補が n トークン未満なら、この n の n-gram は存在しない
+    # clip の上限: 同じ n-gram について、参照訳ごとの出現回数の最大値
+    max_ref = Counter()
+    for ref in references:
+        for g, c in ngram_counts(ref, n).items():
+            max_ref[g] = max(max_ref[g], c)
+    clipped = sum(min(c, max_ref[g]) for g, c in cand.items())
+    return clipped, sum(cand.values())
+
+
+def closest_ref_length(candidate, references):
+    """候補文と長さが最も近い参照訳の長さ(同差なら短い方を採る)。"""
+    c = len(candidate)
+    return min((abs(len(r) - c), len(r)) for r in references)[1]
+
+
+def corpus_bleu(candidates, references_list, max_n=4):
+    """corpus-level BLEU(0〜1)。candidates[i] の参照訳の集合が references_list[i]。"""
+    assert len(candidates) == len(references_list)
+    num = [0] * max_n  # n ごとの分子(clip 済み一致数)のコーパス合算
+    den = [0] * max_n  # n ごとの分母(候補の n-gram 総数)のコーパス合算
+    c_total, r_total = 0, 0
+    for cand, refs in zip(candidates, references_list):
+        for n in range(1, max_n + 1):
+            a, b = modified_precision_counts(cand, refs, n)
+            num[n - 1] += a
+            den[n - 1] += b
+        c_total += len(cand)
+        r_total += closest_ref_length(cand, refs)
+    if min(den) == 0 or min(num) == 0:
+        return 0.0  # どこかの n で一致が1つもなければ log 0 = -inf(幾何平均は0)
+    log_p = sum(math.log(a / b) for a, b in zip(num, den)) / max_n
+    bp = 1.0 if c_total > r_total else math.exp(1.0 - r_total / c_total)
+    return bp * math.exp(log_p)
+
+
+def sentence_bleu(candidate, references, max_n=4):
+    """1文だけの corpus BLEU。観察・デバッグ用(報告には corpus_bleu を使うこと)。"""
+    return corpus_bleu([candidate], [references], max_n)
+
+
+if __name__ == "__main__":
+    # --- 自己点検: 本文 6.1 の手計算例と1つずつ照合する ---
+
+    ref = "the cat sat on the mat".split()
+
+    # 手計算例1: rug 版。p1..p4 = 5/6, 4/5, 3/4, 2/3、BP = 1、BLEU = (1/3)^(1/4)
+    cand = "the cat sat on the rug".split()
+    assert modified_precision_counts(cand, [ref], 1) == (5, 6)
+    assert modified_precision_counts(cand, [ref], 2) == (4, 5)
+    assert modified_precision_counts(cand, [ref], 3) == (3, 4)
+    assert modified_precision_counts(cand, [ref], 4) == (2, 3)
+    assert math.isclose(sentence_bleu(cand, [ref]), (1 / 3) ** 0.25)
+
+    # 手計算例2: clip。「the」だけ7連発 → 分子は参照訳の上限 2 で頭打ち(2/7)
+    cand = "the the the the the the the".split()
+    assert modified_precision_counts(cand, [ref], 1) == (2, 7)
+
+    # 手計算例3: brevity penalty。完全な前置詞句止まり → 全 precision 1 でも罰が残る
+    cand = "the cat sat on the".split()
+    for n in [1, 2, 3, 4]:
+        a, b = modified_precision_counts(cand, [ref], n)
+        assert a == b  # precision はすべて 1
+    assert math.isclose(sentence_bleu(cand, [ref]), math.exp(1 - 6 / 5))
+
+    # 手計算例4: 語順の入れ替え。意味は同じでも 4-gram 一致が 0 → BLEU = 0
+    cand = "on the mat sat the cat".split()
+    assert sentence_bleu(cand, [ref]) == 0.0
+
+    # 完全一致なら 1.0(満点)
+    assert math.isclose(sentence_bleu(ref, [ref]), 1.0)
+
+    print("ok: bleu.py の手計算例をすべて通過しました")
+```
+
+`python3 bleu.py` を実行すると、6.1 の手計算例——clip の 2/7、BP の $e^{-0.2}$、rug の $(1/3)^{1/4}$、倒置文の0——がすべて assert で固定されていることを確認できます。性質テスト(複数参照訳の clip、corpus 合算と文平均の違い、空出力などの境界条件)は `test_bleu.py` にまとめてあり、`python3 test_bleu.py` で通ります。
+
+
+次に、この物差しをモデルに当てる評価パイプラインです。本来ここでは第5章で訓練したモデルに検証データを翻訳させ、その出力を測ります。本章のコードでは、モデルの生成結果に相当する候補文を直書きして、**測る側のパイプラインだけを完成**させておきます(測る側のコードは、測られる側が何であっても変わりません)。`code/ch06/evaluate_demo.py` の全文です。
+
+```python
+"""第8巻 第6章 6.2: 自作モデルの perplexity / BLEU を測る — 評価パイプラインの最小形。
+
+本デモは候補文を直書きし、評価側(この章の担当分)を単体で検証する。測る側のコードは、
+測られる側が何であっても変わらない——実モデルで測るには、第5章のチェックポイント
+(code/ch05/ch05_checkpoint.pt)を読み込み、CANDIDATES を生成文に差し替えればよい(演習)。
+
+実行: python3 evaluate_demo.py(CPU で数秒)
+"""
+import math
+
+from bleu import corpus_bleu, modified_precision_counts, sentence_bleu
+
+# === perplexity: 検証 loss(平均 cross-entropy)の指数 =========================
+
+
+def perplexity(nll_per_token):
+    """1トークンあたりの負の対数尤度(自然対数)の列から perplexity を計算する。
+
+    検証 loss が「トークンあたり平均 cross-entropy」なら math.exp(loss) と同じこと。
+    第4巻7.5の「平均分岐数」、第6巻4章で n-gram を測った、あの物差し。
+    """
+    return math.exp(sum(nll_per_token) / len(nll_per_token))
+
+
+# 検算1: 全トークンで語彙 37 の一様分布なら、平均分岐数はちょうど 37
+V = 37
+assert math.isclose(perplexity([math.log(V)] * 100), V)
+
+# 検算2: 半分のトークンで2択(-log 1/2)、半分で1択(-log 1)なら √2 ≈ 1.41
+assert math.isclose(perplexity([math.log(2), 0.0] * 50), math.sqrt(2))
+
+# 検算3: 訓練ループの検証 loss からは exp(loss) の1行で出る
+val_loss = 2.3  # 第5章の訓練ループが報告する数値の例
+assert math.isclose(perplexity([val_loss] * 10), math.exp(val_loss))
+
+# === BLEU: 検証セットの参照訳 vs モデルの出力 =================================
+
+# 参照訳(検証セット)。語彙の世界観は第6巻4章のおもちゃのコーパスと同じ
+REFERENCES = [
+    "the cat sat on the mat",
+    "the dog chased the black cat",
+    "the small bird flew to the river",
+    "the hungry mouse ate the cheese",
+]
+
+# モデルの出力のつもりの候補文(第5章のチェックポイントで生成した文に差し替え可能)
+CANDIDATES = [
+    "the cat sat on the mat",            # 完全一致
+    "the dog chased the cat",            # 1語の脱落
+    "the bird flew to the small river",  # 修飾語の位置ずれ
+    "the mouse was hungry",              # 短すぎ + 大胆な書き換え
+]
+
+cands = [c.split() for c in CANDIDATES]
+refs_list = [[r.split()] for r in REFERENCES]
+
+print("=== 文ごとの観察(報告には使わない。corpus との差を見るため)===")
+for c, rl in zip(cands, refs_list):
+    print(f"  BLEU {100 * sentence_bleu(c, rl):5.1f} | {' '.join(c)}")
+
+print("\n=== corpus-level の内訳 ===")
+num, den = [0] * 4, [0] * 4
+for c, rl in zip(cands, refs_list):
+    for n in range(1, 5):
+        a, b = modified_precision_counts(c, rl, n)
+        num[n - 1] += a
+        den[n - 1] += b
+for n in range(1, 5):
+    print(f"  p_{n} = {num[n - 1]:2d}/{den[n - 1]:2d} = {num[n - 1] / den[n - 1]:.3f}")
+
+score = corpus_bleu(cands, refs_list)
+print(f"\ncorpus BLEU = {100 * score:.1f}")
+
+# --- 検証: 本節の主張をデータで確認する ---
+# (1) 文ごとでは、完全一致は 100、4-gram が全滅する文は 0 に張り付く。
+#     修飾語ずれの文は「bird flew to the」の 4-gram が1本生き残るので 0 にならない
+assert math.isclose(sentence_bleu(cands[0], refs_list[0]), 1.0)
+assert 0.0 < sentence_bleu(cands[2], refs_list[2]) < sentence_bleu(cands[1], refs_list[1])
+assert sentence_bleu(cands[3], refs_list[3]) == 0.0
+# (2) corpus-level なら、ゼロの文が混ざっても全体は 0 にならない(合算の効能)
+assert 0.0 < score < 1.0
+# (3) この実行の値の固定(回帰テスト): 手元の合算 p_n と BP からの再計算と一致
+c_total = sum(len(c) for c in cands)
+r_total = sum(len(rl[0]) for rl in refs_list)
+bp = 1.0 if c_total > r_total else math.exp(1.0 - r_total / c_total)
+expected = bp * math.exp(sum(math.log(a / b) for a, b in zip(num, den)) / 4)
+assert math.isclose(score, expected)
+
+print("\nok: evaluate_demo.py のすべての assert を通過しました")
+```
+
+実行結果はこうなります。
+
+```text
+=== 文ごとの観察(報告には使わない。corpus との差を見るため)===
+  BLEU 100.0 | the cat sat on the mat
+  BLEU  57.9 | the dog chased the cat
+  BLEU  50.8 | the bird flew to the small river
+  BLEU   0.0 | the mouse was hungry
+
+=== corpus-level の内訳 ===
+  p_1 = 21/22 = 0.955
+  p_2 = 12/18 = 0.667
+  p_3 =  8/14 = 0.571
+  p_4 =  5/10 = 0.500
+
+corpus BLEU = 57.0
+```
+
+文ごとの数字に、6.1 で学んだ癖が全部出ています。1語落としただけの2文目は 57.9 まで下がる(脱落語を含む n-gram が道連れになる)。修飾語が1つずれた3文目は、「bird flew to the」という 4-gram が1本だけ生き残るおかげで 0 を免れて 50.8。意味は通じる4文目は、短さと書き換えで 3-gram から全滅して 0 です。そして corpus-level では、0 の文が混ざっても全体は 57.0 と穏やかにまとまる——分子・分母を合算する設計の効能です。
+
+ここで、**トイ規模の数字の読み方**に注意を3つ。この 57.0 のような数字を論文と並べたくなりますが、並べてはいけません。
+
+1. **物差しの目盛りがコーパスごとに違う**。BLEU はトークンの切り方(単語か、BPE のサブワードか)、参照訳の本数、文の長さ分布に依存します。おもちゃの語彙37のコーパスでの 57.0 と、WMT newstest2014 での 28.4 は、同じ「BLEU」という名前の**別の物差し**です。perplexity も同じで、第6巻4章の 3.76(語彙37)と論文 Table 3 の 4.92(BPE 語彙3万超)は比較になりません。
+2. **トイは数字が暴れる**。検証セットが数十〜数百文だと、数文の出来不出来で BLEU が数ポイント平気で動きます。1回の測定値を信じすぎないこと。
+3. **比べてよいのは「同じ設定の自分のモデル同士」だけ**。同じデータ・同じトークナイズ・同じ検証セットで、モデル側の条件を1つだけ変えて比べる——実はそれこそが、これから読む Table 3 の作法そのものです。
+
+## 6.3 Table 2 を読む — BLEU と training cost(FLOPs)。「うちのモデルは論文の何分の一か」を見積もる
+
+物差しの癖を知ったので、論文の看板の表が読めます。
+
+> *"On the WMT 2014 English-to-German translation task, the big transformer model (Transformer (big) in Table 2) outperforms the best previously reported models (including ensembles) by more than 2.0 BLEU, establishing a new state-of-the-art BLEU score of 28.4."*
+> — Vaswani et al., "Attention Is All You Need", Section 6.1
+>
+> 訳: WMT 2014 英独翻訳タスクにおいて、big モデル(Table 2 の Transformer (big))は、アンサンブルを含む既報の最良モデルを 2.0 BLEU 以上上回り、28.4 という新たな最高 BLEU スコアを打ち立てた。
+
+Table 2 は「BLEU(質)」と「training cost(値段)」の2軸の表です。英独(EN-DE)側を抜粋します(英仏 EN-FR の列も論文にはあり、構造は同じです)。
+
+| モデル | BLEU (EN-DE) | Training Cost (FLOPs, EN-DE) |
+|---|---|---|
+| GNMT + RL(RNN) | 24.6 | $2.3 \cdot 10^{19}$ |
+| ConvS2S(CNN) | 25.16 | $9.6 \cdot 10^{18}$ |
+| GNMT + RL Ensemble | 26.30 | $1.8 \cdot 10^{20}$ |
+| ConvS2S Ensemble | 26.36 | $7.7 \cdot 10^{19}$ |
+| **Transformer (base)** | **27.3** | $3.3 \cdot 10^{18}$ |
+| **Transformer (big)** | **28.4** | $2.3 \cdot 10^{19}$ |
+
+読みどころは2つあります。第一に、**base モデルが、単体どころかアンサンブル(複数モデルの平均)まで含めた先行手法全部より高い 27.3 を、桁違いに安いコストで出している**こと。GNMT のアンサンブルと比べるとコストは約 1/50 です。第二に、big はさらに 28.4 で、それでも GNMT 単体と同じコスト帯に収まっていること。第7巻1章で読んだ「捨てたのに勝った、しかも安く勝った」という Introduction の売り文句は、この表の2列をそのまま要約したものでした。
+
+では、cost の列の $3.3 \cdot 10^{18}$ FLOPs という数はどこから来たのでしょうか。FLOPs(floating point operations)は浮動小数点演算の総回数です。論文は脚注でこう見積もっています: **訓練時間 × GPU 枚数 × GPU 1枚の実効演算速度**。使われた P100 という GPU の実効速度を $9.5 \cdot 10^{12}$ FLOPS(1秒あたり)として、base の訓練は 8枚で12時間でしたから(Section 5.2)、
+
+$$12 \times 3600\ \text{秒} \times 8\ \text{枚} \times 9.5 \cdot 10^{12} \approx 3.3 \cdot 10^{18}$$
+
+ぴったり表の値です。Table 2 でいちばん近寄りがたかった列の正体は、掛け算3つでした。これが「読める」ということです。
+
+同じ掛け算で、**うちのモデルは論文の何分の一か**を見積もれます。第2章で決めた縮小構成(GPU 1枚、数百万パラメータ、第5章の訓練が数十分)を代表値にした見積もり表です。
+
+| | 論文 base | うちの縮小版(代表値) | 比 |
+|---|---|---|---|
+| GPU | P100 × 8枚 | 1枚 | 1/8 |
+| 実効速度(FLOPS) | $9.5 \cdot 10^{12}$ | $\sim 1 \cdot 10^{13}$ | ≈ 1 |
+| 訓練時間 | 12時間 | 30分 | 1/24 |
+| **training cost(FLOPs)** | $3.3 \cdot 10^{18}$ | $\sim 1.8 \cdot 10^{16}$ | **≈ 1/180** |
+| パラメータ数 | 65M | 〜5M | ≈ 1/13 |
+| 訓練データ | 450万文対 | 数万文対 | ≈ 1/100 |
+| BLEU | 27.3 | (第5章の実測値) | **比較不能**(6.2 の注意) |
+
+
+つまり私たちが第5章で回したのは、計算量にしておよそ**論文の数百分の一**の実験です。最下行だけは比を書けません——BLEU の目盛りはコーパスに張り付いているからです。代わりに言えるのは「論文と同じ形の実験を、千分の一スケールの世界で完結させた」ということで、序章の宣言どおり、それがこの巻の設計でした。なお、この FLOPs 見積もりは実効速度の仮定に依存する粗い物差しです。1.8倍を議論する精度はありませんが、50倍・180倍という**桁**を語るには十分です。
+
+## 6.4 Table 3(アブレーション)を読む — 各行が1〜7巻のどの議論に対応するかの地図
+
+Table 2 が「勝った」の表なら、Table 3 は「なぜこの設計なのか」の表です。**アブレーション**(ablation)——他の条件をすべて固定して、部品を1つだけ抜く・取り替える実験。第5章の演習で、あなたはハイパーパラメータを1つ選んで自分のアブレーションをやりました。Table 3 はその本家版です。base モデル(N=6, $d_{model}$=512, $d_{ff}$=2048, h=8, $P_{drop}$=0.1, $\epsilon_{ls}$=0.1)を基準に、行ごとに1箇所だけ変えて、開発セット newstest2013 の perplexity と BLEU を測っています。
+
+読む前の注意を1つ。base の dev BLEU は 25.8 で、Table 2 の 27.3 と食い違いますが、矛盾ではありません。測っているテストセットも生成の設定も違うからです(6.2 の注意1の論文内実例: **表をまたいで BLEU を比べない**)。同じ表の中での、base との**差**だけを読みます。
+
+そしてこの表こそ、シリーズ8巻ぶんの議論の答え合わせです。各行がどの巻のどの議論に対応するか、地図にします。
+
+| 行 | 動かすもの | 論文の観察(dev BLEU の動き) | 対応する議論 |
+|---|---|---|---|
+| (A) | head 数 $h$(1〜32) | $h=1$ は −0.9。多すぎても悪化 | **第7巻4章**(multi-head, "averaging inhibits") |
+| (B) | $d_k$ を縮める | 質が落ちる | **第4巻7章**(内積と $d_k$)・第7巻3.3 |
+| (C) | $N$, $d_{model}$, $d_{ff}$ | 大きいほど良い | **第5巻6章**(深くする道具)・第7巻2章・6章 |
+| (D) | $P_{drop}$, $\epsilon_{ls}$ | dropout なしは −1.2。$\epsilon_{ls}$=0 は PPL 改善・BLEU 悪化 | **第5巻6.4**(dropout)・**本巻3.2** + 第4巻終章(label smoothing) |
+| (E) | sin/cos → 学習 PE | ほぼ同じ | **第7巻7.5**(learned PE との比較) |
+
+1行ずつ歩きます。
+
+**(A) head 数。**第7巻4章で、1つの attention では「見方」が1種類に平均されてしまう("averaging inhibits this")から頭を8個に分けるのだ、と読みました。その主張の実験的裏付けがこの行です。$h=1$ は base より 0.9 BLEU 悪い(25.8 → 24.9)。一方 $h=32$ でも悪化します(25.4)。計算量を固定したまま頭を増やすと1頭あたりの $d_k$ は 512/32 = 16 まで痩せるので、これは次の (B) と同じ病気が顔を出しているとも読めます。視点は、多いほど良いわけではない。
+
+**(B) $d_k$。**第4巻7章で、$d_k$ は内積の分散を通して softmax の尖り方を決める数でした(だから $\sqrt{d_k}$ で割る)。この行はその $d_k$ のもう1つの顔——**照合の表現力**——を見せます。$d_k$ を 16 まで縮めると質が落ちる(24.9 相当まで)。query と key の「相性の良さ」を測る空間が16次元では狭すぎるのです。論文はここから "determining compatibility is not easy"(相性の判定は簡単な仕事ではない)と、内積より凝った相性関数への含みまで書いています。
+
+**(C) モデルの大きさ。**$N$ を 6 から 2 に減らすと 23.7 まで落ち、$d_{model}$ を 1024 に、$d_{ff}$ を 4096 に増やすとそれぞれ 26.0、26.2 に伸びる。**大きいほど良い。**ただしこの「大きくすれば伸びる」は、無条件には成立しないことを私たちは知っています。第5巻6.1で、深くしただけのネットワークは勾配消失で壊れるのを観測しました。residual と layer norm(第5巻6.2〜6.3、第7巻2章の $\mathrm{LayerNorm}(x + \mathrm{Sublayer}(x))$)という「深くしても壊れない道具」があって初めて、この行は右肩上がりになります。その先に Table 2 の big(213M パラメータ、28.4)がいます。
+
+**(D) 正則化。**$P_{drop} = 0$ にすると 24.6、base から 1.2 BLEU の下落で、この表で最大級の損害です。第5巻6.4で導入した dropout は、65M パラメータのモデルにとって 450万文対をもってしても必須の装備でした(第3巻6章の言葉でいえば、このモデルはまだ過学習できる大きさです)。そして $\epsilon_{ls}$ の側に、この表でいちばん味わい深い数字があります。label smoothing を切ると **perplexity は 4.92 → 4.67 に改善し、BLEU は 25.8 → 25.3 に悪化する**のです。第4巻終章で読み、本巻3章で実装した "This hurts perplexity, ... but improves accuracy and BLEU" という文の、これが数値の本体です。2つの物差しが逆を向く——評価指標は1本では足りないという 6.1 の注意を、論文自身が実演しています。
+
+**(E) positional encoding。**sin/cos(第7巻7章)を学習式の位置埋め込みに置き換えても 25.7、base と "nearly identical"。第7巻7.5で「ほぼ同じ性能、外挿への期待で sin/cos を選んだ」と読んだ、あの一段落の出典がこの行です。
+
+こうして見ると、Table 3 は設計の弁明の表であると同時に、**1〜7巻で通ってきた議論がそれぞれ何 BLEU ぶんの重みを持っていたかの精算書**でもあります。multi-head は 0.9、dropout は 1.2、深さは 2 以上——。章末の演習で、この表から1行選んで自分の縮小版で再現してもらいます。
+
+## 6.5 6.3(構文解析への一般化)は概観のみ
+
+論文の Section 6 には、もう1つ小さな節があります。Section 6.3 "English Constituency Parsing"——本章の節番号と紛らわしいので、以下「論文 6.3」と呼びます。ここは概観だけにとどめます(最短測地線——この実験の詳細は Transformer の理解に必須ではありません)。
+
+問いはこうです: **Transformer は翻訳専用機なのか?** 論文は英語の構文解析(文を名詞句・動詞句の入れ子構造に分解するタスク)で試します。仕掛けのポイントは、構文木をカッコ付きの記号列に**線形化**してしまえば、構文解析も「英文を入れて記号列を出す」ただの系列変換になる、という点です。モデル側はほぼそのまま(4層、$d_{model}$=1024)。タスク固有の調整をほとんどせずに、4万文の WSJ コーパスだけで既報の多くを上回り、半教師あり設定ではさらに伸びた、と報告されています。
+
+この節が Results の最後に置かれている意味は、数字よりも射程です。翻訳のために設計された機械が、形を変えずに別の言語タスクでも動く——Transformer は**汎用の系列変換器**だという示唆です。この含みが encoder だけを取り出した BERT、decoder だけを取り出した GPT へ枝分かれしていく話は、最終章で扱います。
+
+## まとめ
+
+- BLEU は **modified n-gram precision(clip が「水増し」を潰す)の幾何平均 × brevity penalty(「サボり」を潰す)**。第6巻4章の n-gram が、作る側から測る側に配役を変えて再登場した
+- BLEU は意味も語順の自由も知らない(倒置文が 0 点になる)。**corpus-level** で合算するのは、4-gram のゼロ一致による即死(第6巻4章のゼロ頻度と同じ顔)を避けるため
+- トイ規模の BLEU / perplexity は**論文の数字と比較できない**(トークナイズ・参照訳・コーパスに目盛りが張り付いている)。比べてよいのは同じ設定の自分のモデル同士だけ
+- Table 2 の training cost は「時間 × GPU 枚数 × 実効 FLOPS」の掛け算で読める。base は $3.3 \cdot 10^{18}$ FLOPs で、私たちの縮小版はその**数百分の一**
+- Table 3 は1〜7巻の議論の精算書: (A) head 数 = 第7巻4章、(B) $d_k$ = 第4巻7章、(C) 大きさ = 第5巻6章の道具の上に、(D) dropout = 第5巻6.4・label smoothing = 本巻3.2("hurts perplexity" の数値本体)、(E) 学習 PE = 第7巻7.5
+
+**ラスボスとの距離**: Section 6 Results(Table 2・3、論文 6.3)を読み切りました。論文に未読のセクションは残っていません。あとは終章で、最初のページから通読するだけです。
+
+## 演習
+
+**問1**(BLEU の手計算) 参照訳 "the black dog chased the white cat"(7語)に対する候補文 "the black dog chased the cat"(6語)の BLEU を手で計算してください。$p_1$ から $p_4$、BP、最終値の順に。電卓を使ってよいですが、$p_n$ は分数のまま出すこと。`sentence_bleu` で検算してください。
+
+**問2**(設計の必然性) BLEU から (a) clip だけを外した場合、(b) brevity penalty だけを外した場合、それぞれについて「精度をほぼ満点にできるズルい候補文」を 6.1 の参照訳 "the cat sat on the mat" に対して具体的に1つずつ作ってください。逆に、clip と BP が**両方ある**ときにも残ってしまうズル(またはズルでないのに不当に罰される例)を1つ挙げてください。
+
+**問3**(corpus-level の理由) `test_bleu.py` のテスト7では、単独なら BLEU = 0 の文をコーパスに混ぜても全体が 0 にならないことを確認しています。もし BLEU を「文ごとに計算して平均する」定義にしたら何が起きるか、第6巻4章のゼロ頻度問題・perplexity 無限大の議論と対応づけて説明してください。
+
+**問4**(Table 3 の再現 — この章の主実験) Table 3 から1行選び、第5章の縮小版 Transformer で再現を試みてください。条件: 変えるのは選んだ1箇所だけ(乱数 seed・データ・ステップ数・生成設定はすべて固定)、報告するのは dev perplexity と dev BLEU の**両方**、結果は base との差を1行の表にすること。うまく差が出ても出なくても、「なぜそうなったと考えるか」を3文以内で添えてください。
+
+<details>
+<summary>略解</summary>
+
+**問1** 候補文の unigram は the×2, black, dog, chased, cat ですべて参照訳にあり(the は参照側も2回なので clip にかからない)$p_1 = 6/6$。bigram は5本中 "the cat" だけが外れて $p_2 = 4/5$。trigram は4本中 "chased the cat" だけ外れて $p_3 = 3/4$。4-gram は3本中 "dog chased the cat" が外れて $p_4 = 2/3$。幾何平均は $(1 \cdot \frac{4}{5} \cdot \frac{3}{4} \cdot \frac{2}{3})^{1/4} = (2/5)^{1/4} \approx 0.795$。$c=6, r=7$ なので $\mathrm{BP} = e^{1-7/6} = e^{-1/6} \approx 0.846$。BLEU $\approx 0.795 \times 0.846 \approx 0.673$、**67.3** です。1語(white)の脱落が、4つの $p_n$ と BP の両方に波及するのを確かめてください。
+
+**問2** (a) clip なしなら "the the the the the the the" で $p_1 = 7/7$(本文の例)。(b) BP なしなら "the cat sat on the" で全 $p_n = 1$(これも本文の例。一般に、参照訳の連続部分列を1つだけ書けばよい)。両方あっても残る例: 参照訳の前半と後半を、正しい接続のまま**同義語で言い換えた**翻訳は、ズルどころか良訳なのに n-gram が当たらず低得点になります(rug/carpet 型)。逆方向のズルとしては、参照訳とほぼ同じ長さで、よくある n-gram(the, of the など)を不自然に詰め込む手が部分的に通ります——BLEU が「流暢さの局所性」しか見ない弱点で、これを突く話は機械翻訳の評価研究の入り口です。
+
+**問3** 文ごとの平均だと、4-gram 一致が 0 本の文は($\log 0 = -\infty$ により)その文の BLEU が 0 に張り付き、短い文が多い検証セットでは平均が「0 になった文の割合」にほぼ支配されてしまいます。これは第6巻4章で、テスト文が未見の 3-gram を1つ踏んだだけで文全体の perplexity が無限大に発散したのと同じ構造です(あちらは積=連鎖分解、こちらは幾何平均=積の $1/4$ 乗)。corpus-level の合算は、ゼロを「分子に足される 0」に格下げして、1文の即死が全体を道連れにするのを防ぎます。第6巻4章でのスムージングに当たる応急処置(sentence BLEU の分子に小さな数を足す等)も存在しますが、報告用の標準は合算の方です。
+
+**問4** いちばん再現しやすいのは **(D) の $P_{drop} = 0$** です(変更がコード1箇所で、効果量 −1.2 BLEU が縮小版でも出やすい)。手順: (1) base 構成で seed を固定して訓練し、dev loss・perplexity・BLEU を記録、(2) dropout だけを 0 にして再訓練、(3) 2行の表にする。期待される観察: dropout なしは訓練 loss は速く下がるが、検証 loss が途中で反転して上がり始める(第3巻6章の過学習曲線)。注意点: 縮小版はモデルもデータも小さいので、差の**絶対値**は論文と一致しません(一致しなくてよい——6.2 の注意3)。(E) はそもそも本家でも差が出ない行なので「差が出ないことの再現」になります。(A) や (B) は縮小版だと $d_k$ が極端に小さくなり、数字が暴れて読みにくいことを覚悟してください。どの行を選んでも、「同じ設定で1箇所だけ変える」という作法が守れていれば、この演習は成功です。
+
+</details>
