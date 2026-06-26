@@ -1,83 +1,30 @@
 # 第6章 深くするための道具たち — 論文の部品を先取りする
 
-前の章で、私たちはもう手で微分しなくなりました。autograd に損失を渡せば、第3巻の回帰も第4巻の分類も、勾配は全部自動で出てきます。2層や3層の MLP なら、これで何の問題もなく学習が回ります。
+autograd に損失を渡せば、第3巻の回帰も第4巻の分類も勾配は全部自動で出てきます。2層や3層の MLP なら、これで何の問題もなく学習が回ります。
 
-ところで、論文の図1を見てください。encoder の箱には「N×」と書いてあります。同じブロックを 6 回積むのです。ブロック1つの中にも attention と FFN(第2章で読めた、あの2層です)が入っていますから、全体では数十層。第1章で見たとおり、層を重ねるほど折れ線は細かく曲がれる——深さは表現力です。論文が深く積みたがるのは自然なことです。
+ところで論文の図1を見てください。encoder の箱には「N×」、同じブロックを 6 回積むと書いてあります。ブロック1つの中にも attention と FFN(第2章で読めた2層)が入っていますから、全体では数十層。第1章で見たとおり、層を重ねるほど折れ線は細かく曲がれる——深さは表現力です。論文が深く積みたがるのは自然なことです。
 
-では、私たちの MLP も単純に 10 層に積めば、もっと賢くなるのでしょうか。この章は、まずそれを**やって、壊します**。壊れた様子を数字で観測してから、論文がアーキテクチャ図に埋め込んだ修理道具——residual connection、layer norm、dropout——を1つずつ手に入れます。図1で attention 以外に残っていた「Add & Norm」の箱が、この章で読めるようになります。
+では私たちの MLP も単純に 10 層に積めば、もっと賢くなるのでしょうか。この章は、まずそれを**やって、壊します**。壊れた様子を数字で観測してから、論文がアーキテクチャ図に埋め込んだ修理道具——residual connection、layer norm、dropout——を1つずつ手に入れます。図1で attention 以外に残っていた「Add & Norm」の箱が、この章で読めるようになります。
 
 ## 6.1 深くすると壊れる: 勾配消失を観測する
 
-実験の設計はこうです。幅 64 の隠れ層を 10 層積んだ MLP に、適当な回帰データを1バッチ流し、forward と backward を1回ずつ実行します。学習はまだしません。見たいのは、**各層の重みに届く勾配の大きさ**です。第3章でやったとおり、backward は出口の層から入口の層へ $\delta$ を流していくので、層ごとの $\|\partial L/\partial W_l\|$ を記録できます。
+実験はこうです。幅 64 の隠れ層を 10 層積んだ MLP に回帰データを1バッチ流し、forward と backward を1回ずつ実行します。学習はまだしません。見たいのは**各層の重みに届く勾配の大きさ**です。第3章のとおり backward は出口の層から入口の層へ $\delta$ を流すので、層ごとの $\|\partial L/\partial W_l\|$ を記録できます。
 
-活性化関数には sigmoid を使います(第1章で再会した、第3巻ぶりのあの関数です。なぜ ReLU でないのかは、すぐにわかります)。重みの初期値は「平均0、標準偏差 0.1 の乱数」。小さめの乱数で埋めておく——なんとなく無難に見える選択です。この「なんとなく」は 6.6 で取り調べることになるので、覚えておいてください。
+活性化関数には sigmoid を使います(第1章で再会した、第3巻ぶりの関数。なぜ ReLU でないのかはすぐわかります)。重みの初期値は平均0・標準偏差 0.1 の乱数。小さめの乱数で埋める——なんとなく無難に見える選択です。この「なんとなく」は 6.6 で取り調べます。
 
-コードは第3章の手導出の手順そのままです。autograd を使わず手で backward を書くのは、各層の勾配を途中で覗くためです。
+autograd を使わず手で backward を書くのは、各層の勾配を途中で覗くためです。核心は backward の鎖部分です。
 
 ```python
-# 第5巻 第6章 6.1: 深いMLPで勾配消失を観測する
-# 10層のMLPを1回 forward / backward し、各層の重み勾配のノルムを表にする
-import numpy as np
-
-rng = np.random.default_rng(42)
-
-n, d = 64, 64       # バッチサイズ、隠れ層の幅
-depth = 10          # 隠れ層の数
-sigma_w = 0.1       # 「小さめの乱数」という一見無難な初期化(6.6で再考する)
-
-X = rng.normal(0, 1, size=(n, d))
-y = rng.normal(0, 1, size=(n, 1))
-
-
-def sigmoid(z):
-    return 1.0 / (1.0 + np.exp(-z))
-
-
-# --- パラメータ: 隠れ depth 層 + 出力1層 ---
-Ws = [rng.normal(0, sigma_w, size=(d, d)) for _ in range(depth)]
-bs = [np.zeros(d) for _ in range(depth)]
-W_out = rng.normal(0, sigma_w, size=(d, 1))
-b_out = np.zeros(1)
-
-# --- forward(backward で使う中間値を保存しながら)---
-hs = [X]                                  # hs[l] = 第 l+1 層への入力
-for W, b in zip(Ws, bs):
-    hs.append(sigmoid(hs[-1] @ W + b))
-y_pred = hs[-1] @ W_out + b_out           # (n, 1)
-loss = np.mean((y_pred - y) ** 2)
-
-# --- backward(第3章の手導出と同じ手順)---
 delta = 2.0 * (y_pred - y) / n            # (n, 1)
 grad_W_out = hs[-1].T @ delta
-delta = delta @ W_out.T                   # (n, d) 最終隠れ層の出力への勾配
-grad_Ws = [None] * depth
+delta = delta @ W_out.T                   # 最終隠れ層の出力への勾配
 for l in range(depth - 1, -1, -1):
     delta = delta * hs[l + 1] * (1.0 - hs[l + 1])   # sigmoid の微分 = s(1-s)
     grad_Ws[l] = hs[l].T @ delta                    # ∂L/∂W_l = 入力^T @ δ
     delta = delta @ Ws[l].T
-
-# --- 各層の勾配ノルムを表にする ---
-norms = np.array([np.linalg.norm(g) for g in grad_Ws])
-print("層   ||grad_W_l||")
-for l in range(depth):
-    print("{:2d}   {:.3e}".format(l + 1, norms[l]))
-print("loss = {:.4f}".format(loss))
-print("第1層と第10層の勾配ノルム比: {:.2e}".format(norms[0] / norms[-1]))
-
-# --- 検証: 本節の主張をデータで確認する ---
-# (1) 入口の層の勾配は出口の層より桁違いに小さい(勾配消失)
-assert norms[0] < 1e-4 * norms[-1], "勾配消失が観測できていません"
-
-# (2) 減衰は一方向: 出口から入口へ向かって単調に小さくなる
-assert np.all(np.diff(norms) > 0)
-
-# (3) forward は死んでいない: 出力は有限で、損失も普通の値
-assert np.all(np.isfinite(y_pred)) and 0.1 < loss < 10.0
-
-print("すべての assert を通過しました")
 ```
 
-実行結果を表にします。
+全文と動作確認は `code/ch06/vanishing_gradients.py`(`python3` で全 assert 通過)。実行結果を表にします。
 
 | 層 | $\|\partial L/\partial W_l\|$ |
 |---:|---:|
@@ -92,36 +39,25 @@ print("すべての assert を通過しました")
 | 9 | 2.756e-01 |
 | 10 | 1.381e+00 |
 
-出口側の第10層には 1.4 の勾配が届いています。入口側の第1層には 0.0000002 です。**7桁の差**。1層さかのぼるたびに、勾配はおよそ 10 分の 1 に痩せています。この現象を**勾配消失**(vanishing gradient)と呼びます。
+出口側の第10層には 1.4 の勾配が届き、入口側の第1層には 0.0000002 です。**7桁の差**。1層さかのぼるたびに勾配はおよそ 10 分の 1 に痩せています。この現象を**勾配消失**(vanishing gradient)と呼びます。
 
-これがどれほど致命的か、学習率の身になって考えてみてください。第10層に合わせて学習率を選べば、第1層は1ステップあたり実質ゼロしか動きません——入口の層は学習に参加できない置物です。逆に第1層に合わせて学習率を 1000 万倍にすれば、第10層が吹き飛びます。どちらに合わせても破綻する。深くした瞬間、勾配降下という乗り物が壊れるのです。
+これがどれほど致命的か、学習率の身になって考えてください。第10層に合わせて学習率を選べば第1層は1ステップあたり実質ゼロしか動かず、入口の層は学習に参加できない置物になります。逆に第1層に合わせて学習率を 1000 万倍にすれば第10層が吹き飛びます。どちらに合わせても破綻する。深くした瞬間、勾配降下という乗り物が壊れるのです。
 
-assert (3) が示すとおり、forward は何事もなく動いていて、損失も普通の値です。病気は backward だけに出る——だからこの病気は、学習曲線が伸びないという症状でしか表に出ず、観測しにくいのです。
+forward は何事もなく動いていて損失も普通の値です(コードの assert (3))。病気は backward だけに出る——だからこの病気は、学習曲線が伸びないという症状でしか表に出ず、観測しにくいのです。
 
-犯人を特定しましょう。第3章で見たとおり、backward は**局所勾配の掛け算の鎖**です。sigmoid の局所勾配は $s(1-s)$ で、その最大値は $s=0.5$ のときの **1/4** です。つまり sigmoid を1枚通るたび、勾配は良くて 4 分の 1、普通はそれ以下に削られます。10 枚通れば $(1/4)^{10} \approx 10^{-6}$。重み行列の掛け算でも(初期値が小さければ)さらに縮みます。1 未満の数を 10 回掛ける——消えるのは算数の必然です。
+犯人を特定します。backward は**局所勾配の掛け算の鎖**でした(第3章)。sigmoid の局所勾配は $s(1-s)$ で、最大値は $s=0.5$ のときの **1/4** です。sigmoid を1枚通るたび勾配は良くて 4 分の 1。10 枚通れば $(1/4)^{10} \approx 10^{-6}$。重み行列の掛け算でも(初期値が小さければ)さらに縮みます。1 未満の数を 10 回掛ける——消えるのは算数の必然です。
 
-実は、この犯人には前科があります。第3巻エピローグで sigmoid + MSE の勾配が死んだとき、第4巻7章で大きすぎる内積が softmax を尖らせたとき——どちらも「飽和した関数の微分がゼロに潰れる」病気でした。今回は飽和すらしていないのに、**1/4 という上限が深さ方向に累積する**という、同じ犯人の新しい手口です。
+この犯人には前科があります。第3巻エピローグで sigmoid + MSE の勾配が死んだとき、第4巻7章で大きすぎる内積が softmax を尖らせたとき——どちらも「飽和した関数の微分がゼロに潰れる」病気でした。今回は飽和すらしていないのに、**1/4 という上限が深さ方向に累積する**という、同じ犯人の新しい手口です。
 
-図6.1 を描くコードも載せておきます(掲載のみ)。
+図6.1 を描くコードは `code/ch06/vanishing_gradients.py` を参照(matplotlib で層番号 vs 勾配ノルムを対数軸プロット)。
 
-```python
-import matplotlib.pyplot as plt
-
-fig, ax = plt.subplots(figsize=(7, 4))
-ax.semilogy(range(1, 11), norms, marker="o")
-ax.set_xlabel("layer")
-ax.set_ylabel("||grad_W||")
-ax.grid(True, which="both", alpha=0.3)
-plt.show()
-```
-
-図6.1: 層番号に対する重み勾配のノルム(縦軸は対数)。右上の出口から左下の入口へ、ほぼ一直線に下る——対数軸での直線は指数的な減衰を意味します。10層でこの傾きなら、論文規模の深さでは何も学習できません。
+図6.1: 層番号に対する重み勾配のノルム(縦軸は対数)。右上の出口から左下の入口へほぼ一直線に下る——対数軸での直線は指数的な減衰を意味します。10層でこの傾きなら、論文規模の深さでは何も学習できません。
 
 診断はつきました。**掛け算の鎖のどこか1箇所でも細ると、それより上流の全員が飢える**。必要なのは、掛け算に参加しなくていい迂回路です。
 
 ## 6.2 residual connection: 「迂回路」で勾配が素通りできる
 
-ある層の変換を $f$ と書くことにします。普通の積み方は、出力をそのまま次へ渡します。
+ある層の変換を $f$ と書きます。普通の積み方は出力をそのまま次へ渡します。
 
 $$\mathbf{h} = f(\mathbf{x})$$
 
@@ -129,92 +65,78 @@ $$\mathbf{h} = f(\mathbf{x})$$
 
 $$\mathbf{h} = \mathbf{x} + f(\mathbf{x})$$
 
-入力 $\mathbf{x}$ を、変換 $f$ を**迂回して**そのまま出力に合流させる。比喩はこれ1つです: 工事区間($f$)の脇に、素通りできる側道($\mathbf{x}$)を必ず併設する。
+入力 $\mathbf{x}$ を、変換 $f$ を**迂回して**そのまま出力に合流させる。工事区間($f$)の脇に、素通りできる側道($\mathbf{x}$)を必ず併設するイメージです。
 
-なぜこれが勾配消失に効くのか、微分すれば一目でわかります。スカラーで書くと
+なぜ勾配消失に効くのか、微分すれば一目でわかります。スカラーで書くと
 
 $$\frac{dh}{dx} = 1 + f'(x)$$
 
-**この +1 がすべてです**。普通の積み方では、$L$ 層分の鎖は局所勾配の積 $f_L' \cdot f_{L-1}' \cdots f_1'$ で、どれか1つでも小さいと全体が潰れました。residual の鎖は $(1+f_L')(1+f_{L-1}')\cdots(1+f_1')$ です。展開すると必ず $1 \times 1 \times \cdots \times 1 = 1$ という項が残る——つまり、**どんなに各層の $f'$ が小さくても、上流の勾配がそのまま素通りで届く経路が、構造として保証されている**のです。
+**この +1 がすべてです**。普通の積み方では $L$ 層分の鎖は局所勾配の積 $f_L' \cdot f_{L-1}' \cdots f_1'$ で、どれか1つでも小さいと全体が潰れました。residual の鎖は $(1+f_L')(1+f_{L-1}')\cdots(1+f_1')$ です。展開すると必ず $1 \times 1 \times \cdots \times 1 = 1$ という項が残る——**どんなに各層の $f'$ が小さくても、上流の勾配がそのまま素通りで届く経路が構造として保証される**のです。
 
-数値で確かめます。6.1 の犯人、sigmoid の局所勾配の最大値 1/4 を 10 層分掛けてみると
+数値で確かめます。sigmoid の局所勾配の最大値 1/4 を 10 層分掛けると
 
 $$0.25^{10} \approx 9.5 \times 10^{-7} \qquad \text{(素通し: 消える)}$$
 $$1.25^{10} \approx 9.3 \qquad \text{(residual: むしろ育つ)}$$
 
-極端な場合として、ある層が完全に死んで $f'=0$ になったとしても、residual なら係数は $1+0=1$。勾配は無傷で通過します。ベクトル版でも同じことが成り立ちます。上流から勾配 $\delta$ が来たとき、和の backward はそれぞれの枝に $\delta$ を配るだけなので
+ある層が完全に死んで $f'=0$ になっても、residual なら係数は $1+0=1$。勾配は無傷で通過します。ベクトル版でも同じです。上流から勾配 $\delta$ が来たとき、和の backward はそれぞれの枝に $\delta$ を配るだけなので
 
 $$\frac{\partial L}{\partial \mathbf{x}} = \underbrace{\delta}_{\text{素通り分}} + \underbrace{(f \text{ 経由分})}_{\text{小さくなりうる}}$$
 
-同梱の `residual_check.py` では、$f(\mathbf{x}) = \tanh(\mathbf{x}W)$ についてこの式を数値微分(第2巻1章の中心差分)と照合し、さらに $W=0$ で $f$ を完全に殺しても上流の勾配がそのまま届くことを assert で確認しています(すべて通過します)。
+同梱の `code/ch06/residual_check.py` では、$f(\mathbf{x}) = \tanh(\mathbf{x}W)$ についてこの式を数値微分(第2巻1章の中心差分)と照合し、さらに $W=0$ で $f$ を完全に殺しても上流の勾配がそのまま届くことを assert で確認しています(`python3` で全 assert 通過)。
 
-それでは、論文の該当箇所を読んでみましょう。
+論文の該当箇所を読みます。
 
 > *"We employ a residual connection around each of the two sub-layers, followed by layer normalization. That is, the output of each sub-layer is LayerNorm(x + Sublayer(x)), where Sublayer(x) is the function implemented by the sub-layer itself."*
 > — Vaswani et al., "Attention Is All You Need", Section 3.1
 >
 > 訳: 2つの部分層それぞれの周りに residual connection を施し、そのあとに layer normalization を適用する。すなわち各部分層の出力は LayerNorm(x + Sublayer(x)) である。ここで Sublayer(x) は部分層自身が実装する関数である。
 
-$\mathrm{LayerNorm}(x + \mathrm{Sublayer}(x))$ の「$x\,+$」——これが residual connection です。$\mathrm{Sublayer}$ は私たちの $f$ のことで、その中身は FFN(第2章)だったり attention(第7巻)だったりします。なお $\mathbf{x} + f(\mathbf{x})$ が成立するには、$f$ の入力と出力の shape が同じでなければなりません。論文が全部分層の出力次元を $d_{model} = 512$ に統一しているのは、まさにこの足し算のためです("To facilitate these residual connections" と論文自身が理由を書いています)。
+$\mathrm{LayerNorm}(x + \mathrm{Sublayer}(x))$ の「$x\,+$」——これが residual connection です。$\mathrm{Sublayer}$ は私たちの $f$ で、中身は FFN(第2章)だったり attention(第7巻)だったりします。$\mathbf{x} + f(\mathbf{x})$ が成立するには $f$ の入力と出力の shape が同じでなければなりません。論文が全部分層の出力次元を $d_{model} = 512$ に統一しているのは、まさにこの足し算のためです("To facilitate these residual connections" と論文自身が理由を書いています)。
 
-残るは外側の LayerNorm です。実は residual には小さな副作用があります。足し算を何段も重ねると、独立に近い量の和なので**分散が層を経るごとに積み上がる**(第4巻2章「和の分散は足せる」がここでも効きます)。実際、6.5 の実験では活性の標準偏差が 10 ブロックで 1.1 から 1.8 まで太ります。スケールの管理人が必要です。
+残るは外側の LayerNorm です。residual には小さな副作用があります。足し算を何段も重ねると、独立に近い量の和なので**分散が層を経るごとに積み上がる**(第4巻2章「和の分散は足せる」がここでも効きます)。6.5 の実験では活性の標準偏差が 10 ブロックで 1.1 から 1.8 まで太ります。スケールの管理人が必要です。
 
 ## 6.3 layer norm: 各サンプルの活性を平均0・分散1に整える
 
-深いネットでは、各層の活性のスケールが放っておくと漂流します。residual の和で太る。初期値や学習の進み方次第で縮みもする。そして 6.1 で見たとおり、sigmoid や tanh は入力が適正帯域を外れると飽和して勾配を殺します。層を経るたびにスケールを**測って整え直す**装置があれば、この漂流を止められます。
+深いネットでは各層の活性のスケールが放っておくと漂流します。residual の和で太り、初期値や学習の進み方次第で縮みもする。そして 6.1 で見たとおり sigmoid や tanh は入力が適正帯域を外れると飽和して勾配を殺します。層を経るたびにスケールを**測って整え直す**装置があれば、この漂流を止められます。
 
-**layer normalization**(層正規化。以下 layer norm)の発想は素朴です。ベクトル $\mathbf{x}$ `(d,)`(1サンプル分の活性)の $d$ 個の成分を「データ」とみなして、平均と分散を計算します。
+**layer normalization**(層正規化。以下 layer norm)の発想は素朴です。ベクトル $\mathbf{x}$ `(d,)`(1サンプル分の活性)の $d$ 個の成分を「データ」とみなし、平均と分散を計算します。
 
 $$\mu = \frac{1}{d}\sum_{i=1}^{d} x_i, \qquad \sigma^2 = \frac{1}{d}\sum_{i=1}^{d} (x_i - \mu)^2$$
 
-見覚えがあるはずです。**第4巻2章の平均と分散、その式そのもの**です。あのときは確率分布を要約する理論の道具でしたが、ここではネットワーク部品の実装に化けます。これを使って標準化し、
+**第4巻2章の平均と分散、その式そのもの**です。あのときは確率分布を要約する理論の道具でしたが、ここではネットワーク部品の実装に化けます。これを使って標準化し、
 
 $$\hat{x}_i = \frac{x_i - \mu}{\sqrt{\sigma^2 + \epsilon}}, \qquad y_i = \gamma_i \hat{x}_i + \beta_i$$
 
 とするのが layer norm です($\epsilon$ はゼロ割り防止の小さな定数)。第3巻6章でデータの列を標準化したのと似ていますが、軸と回数が違います。あちらはデータ行列の**列ごと**に訓練前へ**1回**。こちらは**各サンプルの行ごと**に、ネットの中で**毎 forward**実行します。
 
-$\gamma$ `(d,)` と $\beta$ `(d,)` は学習可能なパラメータです。なぜ標準化したそばから伸縮($\gamma$)と平行移動($\beta$)を許すのでしょうか。強制的に「平均0・分散1」に固定してしまうと、後続の層に渡せる分布の形が縛られ、表現力を削ぐことがあるからです。$\gamma, \beta$ は「基本は整えるが、必要なら学習でスケールを取り戻してよい」という安全弁で、初期値は $\gamma = 1, \beta = 0$、つまり素の標準化から出発します。
+$\gamma$ `(d,)` と $\beta$ `(d,)` は学習可能なパラメータです。なぜ標準化したそばから伸縮($\gamma$)と平行移動($\beta$)を許すのか。強制的に「平均0・分散1」に固定すると、後続の層に渡せる分布の形が縛られ、表現力を削ぐことがあるからです。$\gamma, \beta$ は「基本は整えるが、必要なら学習でスケールを取り戻してよい」という安全弁で、初期値は $\gamma = 1, \beta = 0$、つまり素の標準化から出発します。
 
 ```python
 def layer_norm(x, gamma, beta, eps=1e-5):
-    """各行(各サンプル)を平均0・分散1に整え、gamma で伸縮、beta で平行移動する。
-    x: (n, d), gamma: (d,), beta: (d,)"""
-    mu = x.mean(axis=-1, keepdims=True)        # (n, 1) 各行の平均(第4巻2章)
-    var = x.var(axis=-1, keepdims=True)        # (n, 1) 各行の分散(第4巻2章)
+    """各行(各サンプル)を平均0・分散1に整え、gamma で伸縮、beta で平行移動する。"""
+    mu = x.mean(axis=-1, keepdims=True)        # 各行の平均(第4巻2章)
+    var = x.var(axis=-1, keepdims=True)        # 各行の分散(第4巻2章)
     inv_std = 1.0 / np.sqrt(var + eps)         # eps はゼロ割り防止
     x_hat = (x - mu) * inv_std                 # 平均0・分散1に標準化
     out = gamma * x_hat + beta                 # 学習可能な伸縮とシフト
-    cache = (x_hat, inv_std, gamma)
-    return out, cache
-
-
-def layer_norm_backward(dout, cache):
-    """mu と var も x の関数なので、x への勾配には補正項が2つ付く"""
-    x_hat, inv_std, gamma = cache
-    dgamma = (dout * x_hat).sum(axis=0)
-    dbeta = dout.sum(axis=0)
-    dx_hat = dout * gamma
-    dx = inv_std * (dx_hat
-                    - dx_hat.mean(axis=-1, keepdims=True)
-                    - x_hat * (dx_hat * x_hat).mean(axis=-1, keepdims=True))
-    return dx, dgamma, dbeta
+    return out, (x_hat, inv_std, gamma)
 ```
 
-backward に一言だけ。$x_i$ を動かすと $\hat{x}_i$ が直接動くだけでなく、$\mu$ と $\sigma^2$ も動いて**全成分の** $\hat{x}_j$ に波及します。`dx` の式に引き算が2つ付いているのはその補正です。手で導出すると骨が折れますが、検算は数値微分に任せられますし、そもそも平均も分散も加減乗除と平方根の合成にすぎないので、第4章の autograd ならこの backward は全自動で出てきます。
+backward に一言。$x_i$ を動かすと $\hat{x}_i$ が直接動くだけでなく、$\mu$ と $\sigma^2$ も動いて**全成分の** $\hat{x}_j$ に波及します。`dx` の式に引き算が2つ付くのはその補正です。手で導出すると骨が折れますが検算は数値微分に任せられますし、平均も分散も加減乗除と平方根の合成にすぎないので、第4章の autograd ならこの backward は全自動で出てきます。
 
-同梱の `layer_norm.py` には、上の2関数に加えて検証を付けてあります。わざと平均3・標準偏差2のずれたデータを入れて、出力の各行が平均0・分散1に整うこと、そして `dx`・`dgamma`・`dbeta` の3つすべてが数値微分と一致することを assert で確認します(すべて通過します)。
+全文(`layer_norm_backward` を含む)と検証は `code/ch06/layer_norm.py`。わざと平均3・標準偏差2のずれたデータを入れて出力の各行が平均0・分散1に整うこと、`dx`・`dgamma`・`dbeta` の3つすべてが数値微分と一致することを assert で確認します(`python3` で全 assert 通過)。
 
-これで $\mathrm{LayerNorm}(x + \mathrm{Sublayer}(x))$ が**全部**読めました。図1の「Add & Norm」という箱は、「Add = residual の足し算、Norm = layer norm」だったのです。
+これで $\mathrm{LayerNorm}(x + \mathrm{Sublayer}(x))$ が**全部**読めました。図1の「Add & Norm」という箱は「Add = residual の足し算、Norm = layer norm」だったのです。
 
 ## 6.4 dropout: 訓練時だけランダムに消す
 
-第3巻6章の最後で、正則化の棚に「訓練の手続きにわざと邪魔を入れる」型の道具があり、筆頭の dropout は第5巻で導入する、と予告しました。ここで回収します。
+第3巻6章の最後で、正則化の棚に「訓練の手続きにわざと邪魔を入れる」型の道具があり、筆頭の dropout は第5巻で導入すると予告しました。ここで回収します。
 
 **dropout** の手続きは1行で言えます。**訓練中の forward のたびに、各ユニットの出力を確率 $p$ でゼロにする**。毎バッチ、消える顔ぶれはランダムに変わります。
 
-なぜこんな破壊行為が過学習(第3巻6章)に効くのでしょうか。丸暗記という現象は、特定のユニットたちが精密な共同作業を組み上げることで成立します——「ユニット7が出すこの値を、ユニット23がちょうど打ち消して……」という、訓練データ専用の曲芸です。dropout はこの共同作業を不可能にします。毎回ランダムに欠席者が出るチームでは、特定の相方しか知らない仕事を作れません。各ユニットは、誰が欠けても機能する冗長で頑健な特徴を学ぶしかなくなる。これが dropout が正則化として働く直観です。
+なぜこの破壊が過学習(第3巻6章)に効くのか。丸暗記は、特定のユニットたちが精密な共同作業を組み上げることで成立します——「ユニット7が出すこの値を、ユニット23がちょうど打ち消して……」という訓練データ専用の曲芸です。dropout はこの共同作業を不可能にします。毎回ランダムに欠席者が出るチームでは、特定の相方しか知らない仕事を作れません。各ユニットは誰が欠けても機能する冗長で頑健な特徴を学ぶしかなくなる——これが dropout が正則化として働く直観です。
 
-問題は推論時です。本番では全員出席させたい(わざわざ性能を落とす理由がありません)。しかし訓練中に各ユニットが平均 $(1-p)$ 倍しか信号を通していなかったのに、推論で急に全員が通すと、後続の層から見て入力の期待値が $1/(1-p)$ 倍にずれます。そこで現代の標準実装は、**訓練時に生き残りを $1/(1-p)$ 倍しておく**(逆スケーリング)という手を使います。マスクを $m_i \in \{0, \frac{1}{1-p}\}$ と書くと
+問題は推論時です。本番では全員出席させたい。しかし訓練中に各ユニットが平均 $(1-p)$ 倍しか信号を通していなかったのに、推論で急に全員が通すと、後続の層から見て入力の期待値が $1/(1-p)$ 倍にずれます。そこで現代の標準実装は、**訓練時に生き残りを $1/(1-p)$ 倍しておく**(逆スケーリング)。マスクを $m_i \in \{0, \frac{1}{1-p}\}$ と書くと
 
 $$\mathbb{E}[m_i x_i] = (1-p)\cdot\frac{x_i}{1-p} + p \cdot 0 = x_i$$
 
@@ -230,24 +152,24 @@ def dropout(x, p_drop, rng, training=True):
     return x * mask, mask
 ```
 
-backward は mask を掛けるだけです。dropout は「定数 mask との要素ごとの積」なので局所勾配が mask そのものになり、消えた要素には勾配も流れません。同梱の `dropout.py` では、推論時は入力が素通しになること、訓練時の各要素が 0 か $x/(1-p)$ のどちらかになること、実際に落ちる割合が $p$ に一致すること(100万要素で 0.0997)、訓練時出力を2万回平均すると $x$ に戻ること(最大ずれ 0.009)を assert で確認しています。
+backward は mask を掛けるだけです。dropout は「定数 mask との要素ごとの積」なので局所勾配が mask そのものになり、消えた要素には勾配も流れません。全文と検証は `code/ch06/dropout.py`。推論時は入力が素通しになること、訓練時の各要素が 0 か $x/(1-p)$ のどちらかになること、実際に落ちる割合が $p$ に一致すること(100万要素で 0.0997)、訓練時出力を2万回平均すると $x$ に戻ること(最大ずれ 0.009)を assert で確認しています(`python3` で全 assert 通過)。
 
-論文の該当箇所も読んでおきましょう。
+論文の該当箇所も読みます。
 
 > *"Residual Dropout: We apply dropout to the output of each sub-layer, before it is added to the sub-layer input and normalized. ... For the base model, we use a rate of P_drop = 0.1."*
 > — Vaswani et al., "Attention Is All You Need", Section 5.4
 >
 > 訳: 残差 dropout: 各部分層の出力に dropout を適用する。部分層の入力に加算され正規化される前に、である。(中略)ベースモデルでは P_drop = 0.1 を用いる。
 
-「加算され正規化される前に」——論文は部品の取り付け位置まで指定しています。組み立てると、各部分層の本当の姿はこうです。
+「加算され正規化される前に」——論文は取り付け位置まで指定しています。組み立てると、各部分層の本当の姿はこうです。
 
 $$\mathrm{LayerNorm}(x + \mathrm{Dropout}(\mathrm{Sublayer}(x)))$$
 
-この章の3つの道具が、1行に全部入りました。あとは、本当に効くのか確かめるだけです。
+この章の3つの道具が1行に全部入りました。あとは、本当に効くのか確かめるだけです。
 
 ## 6.5 [コード] residual / layer norm / dropout を実装し、深いネットで効果を比較する
 
-6.1 と同じ条件(幅 64、10 ブロック、$\sigma_w = 0.1$、sigmoid)で、ブロックのつなぎ方だけを変えた4変種を比べます。ブロックの中身は $f(\mathbf{x}) = \mathrm{sigmoid}(\mathbf{x}W_1 + \mathbf{b}_1)W_2 + \mathbf{b}_2$——論文の FFN(第2章)と同じ2層構造で、活性化だけは病気持ちの sigmoid のまま残します。病人を治すのは道具であって、活性化のすり替えではないことを見るためです。
+6.1 と同じ条件(幅 64、10 ブロック、$\sigma_w = 0.1$、sigmoid)で、ブロックのつなぎ方だけを変えた4変種を比べます。ブロックの中身は $f(\mathbf{x}) = \mathrm{sigmoid}(\mathbf{x}W_1 + \mathbf{b}_1)W_2 + \mathbf{b}_2$——論文の FFN(第2章)と同じ2層構造で、活性化だけは病気持ちの sigmoid のまま残します。病人を治すのは道具であって活性化のすり替えではない、と見るためです。
 
 | 変種 | ブロックの出力 |
 |---|---|
@@ -256,129 +178,30 @@ $$\mathrm{LayerNorm}(x + \mathrm{Dropout}(\mathrm{Sublayer}(x)))$$
 | residual+ln | $\mathrm{LayerNorm}(\mathbf{x} + f(\mathbf{x}))$ |
 | residual+ln+dropout | $\mathrm{LayerNorm}(\mathbf{x} + \mathrm{Dropout}(f(\mathbf{x})))$ — 論文 5.4 の完全形 |
 
-4変種とも**同一の重み・同一のデータ**を使い、各ブロックの $\|\partial L/\partial W_1\|$ を測ります。コードは `residual_comparison.py` の全文です(6.3 で示した2関数の再掲部分だけ、紙面ではコメント1行に畳みます)。
+4変種とも**同一の重み・同一のデータ**を使い、各ブロックの $\|\partial L/\partial W_1\|$ を測ります。核心は、forward でブロック出力を変種ごとに切り替える部分と、backward で「和」の勾配配分を行う部分です。
 
 ```python
-# 第5巻 第6章 6.5: residual / layer norm / dropout の有無で各層の勾配ノルムを比較する
-# 4変種とも同一の重み・同一のデータ。違いはブロックのつなぎ方だけ
-import numpy as np
+# forward: 変種ごとにブロック出力を切り替える
+f = a @ prm["W2"] + prm["b2"]              # 論文の FFN と同じ形(第2章)
+if variant == "residual+ln+dropout":
+    mask = (mask_rng.random(f.shape) >= p_drop) / (1.0 - p_drop)
+    f = f * mask                          # LayerNorm(x + Dropout(Sublayer(x)))
+if variant == "plain":
+    h, ln_cache = f, None
+elif variant == "residual":
+    h, ln_cache = x_in + f, None
+else:
+    h, ln_cache = layer_norm(x_in + f, prm["gamma"], prm["beta"])
 
-rng = np.random.default_rng(42)
-
-n, d = 64, 64
-depth = 10
-sigma_w = 0.1      # 6.1 と同じ「一見無難な」初期化(条件を揃える)
-p_drop = 0.1       # 論文 5.4 の P_drop = 0.1
-
-
-def sigmoid(z):
-    return 1.0 / (1.0 + np.exp(-z))
-
-
-# --- 6.3 の layer_norm / layer_norm_backward をそのまま再掲(紙面では省略)---
-
-# --- データと重み(全変種で共通)---
-X = rng.normal(0, 1, size=(n, d))
-y = rng.normal(0, 1, size=(n, 1))
-params = []
-for _ in range(depth):
-    params.append({
-        "W1": rng.normal(0, sigma_w, size=(d, d)), "b1": np.zeros(d),
-        "W2": rng.normal(0, sigma_w, size=(d, d)), "b2": np.zeros(d),
-        "gamma": np.ones(d), "beta": np.zeros(d),
-    })
-W_out = rng.normal(0, sigma_w, size=(d, 1))
-
-VARIANTS = ["plain", "residual", "residual+ln", "residual+ln+dropout"]
-
-
-def forward_backward(variant, mask_rng):
-    """各ブロックの ||grad_W1|| の配列と、各ブロック出力の標準偏差の配列を返す"""
-    caches = []
-    h_stds = []
-    h = X
-    for prm in params:
-        x_in = h
-        z1 = x_in @ prm["W1"] + prm["b1"]
-        a = sigmoid(z1)
-        f = a @ prm["W2"] + prm["b2"]          # 論文の FFN と同じ形(第2章)
-        mask = None
-        if variant == "residual+ln+dropout":
-            mask = (mask_rng.random(f.shape) >= p_drop) / (1.0 - p_drop)
-            f = f * mask                       # LayerNorm(x + Dropout(Sublayer(x)))
-        if variant == "plain":
-            h, ln_cache = f, None
-        elif variant == "residual":
-            h, ln_cache = x_in + f, None
-        else:
-            h, ln_cache = layer_norm(x_in + f, prm["gamma"], prm["beta"])
-        caches.append((x_in, a, mask, ln_cache))
-        h_stds.append(h.std())
-    y_pred = h @ W_out
-    loss_grad = 2.0 * (y_pred - y) / n         # (n, 1)
-
-    delta = loss_grad @ W_out.T                # (n, d)
-    norms = [0.0] * depth
-    for l in range(depth - 1, -1, -1):
-        x_in, a, mask, ln_cache = caches[l]
-        prm = params[l]
-        if ln_cache is not None:
-            delta, _, _ = layer_norm_backward(delta, ln_cache)
-        df = delta                             # 「和」の backward: f 側にも素通り側にも delta
-        if mask is not None:
-            df = df * mask
-        da = df @ prm["W2"].T
-        dz1 = da * a * (1.0 - a)
-        norms[l] = np.linalg.norm(x_in.T @ dz1)    # ||grad_W1||
-        dx_f = dz1 @ prm["W1"].T
-        delta = dx_f if variant == "plain" else delta + dx_f
-    return np.array(norms), np.array(h_stds)
-
-
-results = {}
-stds = {}
-for v in VARIANTS:
-    results[v], stds[v] = forward_backward(v, mask_rng=np.random.default_rng(7))
-
-# --- 表: 各ブロックの ||grad_W1|| ---
-header = "ブロック  " + "  ".join("{:>11s}".format(v) for v in VARIANTS)
-print(header)
-for l in range(depth):
-    row = "{:6d}    ".format(l + 1)
-    row += "  ".join("{:11.3e}".format(results[v][l]) for v in VARIANTS)
-    print(row)
-
-# --- 検証: 本節の主張をデータで確認する ---
-ratio = {v: results[v][0] / results[v][-1] for v in VARIANTS}
-for v in VARIANTS:
-    print("{:>20s}: 第1/第10ブロックの勾配ノルム比 = {:.2e}".format(v, ratio[v]))
-
-# (1) plain では勾配が消失する(6.1 の再現): 入口は出口の 1e-5 倍未満
-assert ratio["plain"] < 1e-5
-
-# (2) residual を入れると、入口と出口が同じ桁に並ぶ
-for v in ["residual", "residual+ln", "residual+ln+dropout"]:
-    assert ratio[v] > 0.1, v
-    # 全ブロックが2桁以内に収まる(どの層も学習に参加できる)
-    assert results[v].max() / results[v].min() < 100.0, v
-
-# (3) plain に対して、residual は入口の層の勾配を桁違いに回復させる
-assert results["residual"][0] > 1e4 * results["plain"][0]
-
-# (4) residual だけでは活性のスケールが膨らむ(和の分散は足し算 — 第4巻2章)
-assert stds["residual"][-1] > 1.3 * stds["residual"][0]
-
-# (5) layer norm を入れると、何段重ねてもスケールは 1 のまま
-assert np.allclose(stds["residual+ln"], 1.0, atol=0.01)
-
-print("residual の出力 std: 1ブロック目 {:.2f} → 10ブロック目 {:.2f}".format(
-    stds["residual"][0], stds["residual"][-1]))
-print("residual+ln の出力 std: 全ブロックで {:.3f}〜{:.3f}".format(
-    stds["residual+ln"].min(), stds["residual+ln"].max()))
-print("すべての assert を通過しました")
+# backward: 「和」の backward は f 側にも素通り側にも delta を配る
+df = delta
+if mask is not None:
+    df = df * mask
+...
+delta = dx_f if variant == "plain" else delta + dx_f
 ```
 
-実行結果の表がこちらです。
+全文と動作確認は `code/ch06/residual_comparison.py`(`python3` で全 assert 通過。6.3 の `layer_norm` / `layer_norm_backward` を再利用)。実行結果の表がこちらです。
 
 | ブロック | plain | residual | residual+ln | residual+ln+dropout |
 |---:|---:|---:|---:|---:|
@@ -393,26 +216,13 @@ print("すべての assert を通過しました")
 | 9 | 5.332e-02 | 3.040e+00 | 1.234e+00 | 1.124e+00 |
 | 10 | 2.472e-01 | 3.072e+00 | 1.348e+00 | 1.190e+00 |
 
-列ごとに読みます。**plain** は 6.1 の再現で、入口と出口の比は 6.4e-08。ブロックが2層構造になった分、病状はさらに悪化しています。**residual** の列に移った瞬間、景色が変わります。第1ブロックに 0.53——plain の **3,000万倍**の勾配が届き、全ブロックが同じ桁に並びます(入口/出口比 0.17)。+1 の迂回路は、たしかに開通しました。
+列ごとに読みます。**plain** は 6.1 の再現で入口と出口の比は 6.4e-08。ブロックが2層構造になった分、病状はさらに悪化しています。**residual** に移った瞬間、景色が変わります。第1ブロックに 0.53——plain の **3,000万倍**の勾配が届き、全ブロックが同じ桁に並びます(入口/出口比 0.17)。+1 の迂回路は、たしかに開通しました。
 
-ただし residual 単体では、6.2 の終わりに予告した副作用が出ています。出力の標準偏差が 1.12 から 1.77 へ、ブロックを経るごとに太っていく(assert (4)。和の分散は足し算で積み上がるためです)。**residual+ln** はこれを完全に止め、全ブロックの std が 1.000 に固定されます(assert (5))。勾配の健康も保たれたままです(比 0.12)。最後に **dropout** を論文指定の位置に差し込んでも(P_drop = 0.1)、勾配の配管はいっさい壊れません(比 0.15)。
+ただし residual 単体では、6.2 で予告した副作用が出ています。出力の標準偏差が 1.12 から 1.77 へ、ブロックを経るごとに太る(assert (4)。和の分散は足し算で積み上がるため)。**residual+ln** はこれを完全に止め、全ブロックの std が 1.000 に固定されます(assert (5))。勾配の健康も保たれたままです(比 0.12)。最後に **dropout** を論文指定の位置に差し込んでも(P_drop = 0.1)、勾配の配管はいっさい壊れません(比 0.15)。
 
-1つ注意を。この実験で測ったのは「勾配が全層に流れるか」という**配管の健康診断**であって、dropout の本領(過学習の抑制)はここには写りません。それは訓練全体を回し、第3巻6章の検証 loss という物差しを当てて初めて見える効果です。ここでは「論文の完全形 LayerNorm(x + Dropout(Sublayer(x))) を組んでも、深さへの耐性は損なわれない」という検収まで。
+1つ注意を。この実験で測ったのは「勾配が全層に流れるか」という**配管の健康診断**であって、dropout の本領(過学習の抑制)はここには写りません。それは訓練全体を回し、第3巻6章の検証 loss という物差しを当てて初めて見える効果です。ここでは「論文の完全形 LayerNorm(x + Dropout(Sublayer(x))) を組んでも深さへの耐性は損なわれない」という検収まで。
 
-図6.2 はこの表の可視化です(掲載のみ)。
-
-```python
-import matplotlib.pyplot as plt
-
-fig, ax = plt.subplots(figsize=(7, 4))
-for v in VARIANTS:
-    ax.semilogy(range(1, depth + 1), results[v], marker="o", label=v)
-ax.set_xlabel("block")
-ax.set_ylabel("||grad_W1||")
-ax.legend()
-ax.grid(True, which="both", alpha=0.3)
-plt.show()
-```
+図6.2 はこの表の可視化です(描画コードは `code/ch06/residual_comparison.py` を参照。matplotlib で4変種の勾配ノルムを対数軸に重ねる)。
 
 図6.2: ブロック番号に対する $\|\partial L/\partial W_1\|$(縦軸は対数)。plain だけが左へ向かって一直線に滑落し、residual を含む3本は上端でほぼ水平に並ぶ。「深くしても全層が学習に参加できる」とは、この水平線のことです。
 
@@ -420,7 +230,7 @@ plt.show()
 
 最後に、6.1 から棚上げにしてきた「なんとなく $\sigma_w = 0.1$」を取り調べます。residual と layer norm は配管を守ってくれますが、**学習が始まる瞬間のスケール**を決めるのは初期値の乱数です。乱数なら何でもいいのでしょうか。
 
-1層分の計算 $y_i = \sum_{j=1}^{d} x_j W_{ji}$ をじっと見てください。これは $d$ 項の**内積**です。「成分が独立な確率変数の内積は、どれくらいの大きさになるか」——この問いに、私たちは一度答えています。**第4巻7章、$\sqrt{d_k}$ の伏線回収で使った、あの計算がここに再登場します**。入力の成分が平均0・分散1、重みが平均0・分散 $\sigma_w^2$ で互いに独立なら、和の分散は足し算なので
+1層分の計算 $y_i = \sum_{j=1}^{d} x_j W_{ji}$ は $d$ 項の**内積**です。「成分が独立な確率変数の内積はどれくらいの大きさになるか」——この問いに私たちは一度答えています。**第4巻7章、$\sqrt{d_k}$ の伏線回収で使ったあの計算がここに再登場します**。入力の成分が平均0・分散1、重みが平均0・分散 $\sigma_w^2$ で互いに独立なら、和の分散は足し算なので
 
 $$\mathrm{Var}(y_i) = d \cdot \sigma_w^2$$
 
@@ -430,21 +240,14 @@ $$\sigma_w = \frac{1}{\sqrt{d}}$$
 
 これが **Xavier 初期化**(Xavier initialization。Glorot 初期化とも)の核心です(ReLU 用に $\sqrt{2/d}$ とする He 初期化という変種もあります。名前だけ知っていれば十分です)。同じ計算、同じ薬。違いは飲むタイミングだけです。
 
-`init_variance.py` の冒頭で、まずこの式そのものを確かめます。
+`code/ch06/init_variance.py` の冒頭で、まずこの式そのものを確かめます。
 
 ```python
-import numpy as np
-
-rng = np.random.default_rng(42)
-n, d = 1000, 256
-
 # y_i = Σ_j x_j W_ji は d 項の内積。Var(y_i) = d・σ_w²(第4巻7章と同じ計算)
 X = rng.normal(0, 1, size=(n, d))     # 入力の標準偏差は 1
 for sigma_w in [0.01, 0.0625, 0.1]:
     y_out = X @ rng.normal(0, sigma_w, size=(d, d))
     predicted = np.sqrt(d) * sigma_w
-    print("σ_w = {:6.4f}: 実測 std = {:.4f}  理論 √d・σ_w = {:.4f}".format(
-        sigma_w, y_out.std(), predicted))
     assert np.allclose(y_out.std(), predicted, rtol=0.05)
 ```
 
@@ -454,7 +257,7 @@ for sigma_w in [0.01, 0.0625, 0.1]:
 σ_w = 0.1000: 実測 std = 1.6053  理論 √d・σ_w = 1.6000
 ```
 
-1層あたりの倍率は $\sqrt{d}\,\sigma_w$。これが 1 からずれると、深さの分だけ累乗で効きます。同じファイルの続きで、線形10層に3種類の初期値を通した結果がこうなります(assert で固定済み)。
+全文と動作確認は `code/ch06/init_variance.py`(`python3` で全 assert 通過)。1層あたりの倍率は $\sqrt{d}\,\sigma_w$。これが 1 からずれると深さの分だけ累乗で効きます。同じファイルの続きで、線形10層に3種類の初期値を通した結果がこうなります。
 
 | 初期値 $\sigma_w$ | $\sqrt{d}\,\sigma_w$ | 10層後の活性の std |
 |---|---:|---:|
@@ -464,7 +267,7 @@ for sigma_w in [0.01, 0.0625, 0.1]:
 
 「乱数なら何でもいい」が嘘である理由が、この3行です。小さすぎれば信号が forward の時点で消滅し、大きすぎれば爆発する。さらに tanh や sigmoid を挟むと、大きすぎる初期値は爆発の代わりに**飽和**します。同ファイルの最後の実験では、$8/\sqrt{d}$ で初期化した tanh 10層の出力は平均 $|h| = 0.93$——ほぼ全員が $\pm 1$ に張り付き、局所勾配 $1-\tanh^2$ が死にます。第3巻エピローグから数えて3度目の、おなじみの病気です。
 
-これで 6.1 の「なんとなく」の罪状が確定します。$d = 64$ に $\sigma_w = 0.1$ は $\sqrt{d}\,\sigma_w = 0.8$。1層ごとに2割ずつ信号が痩せる初期値でした。そのうえ sigmoid の局所勾配 $\le 1/4$ が backward で累積する——勾配消失は、この2つの合わせ技だったのです。では初期化さえ Xavier にすれば 6.1 は治るのでしょうか。実は治りません(演習4で確かめます)。$\sqrt{d}\,\sigma_w = 1$ にしても sigmoid の 1/4 は消せないからです。だからこそ道具は役割分担で併用します。**初期化**が出発時のスケールを整え、**residual** が勾配の配管を保証し、**layer norm** が巡航中のスケールを管理し、**dropout** が過学習を見張る。論文のアーキテクチャは、この分担表そのものです。
+これで 6.1 の「なんとなく」の罪状が確定します。$d = 64$ に $\sigma_w = 0.1$ は $\sqrt{d}\,\sigma_w = 0.8$。1層ごとに2割ずつ信号が痩せる初期値でした。そのうえ sigmoid の局所勾配 $\le 1/4$ が backward で累積する——勾配消失は、この2つの合わせ技だったのです。では初期化さえ Xavier にすれば 6.1 は治るのか。実は治りません(演習4で確かめます)。$\sqrt{d}\,\sigma_w = 1$ にしても sigmoid の 1/4 は消せないからです。だからこそ道具は役割分担で併用します。**初期化**が出発時のスケールを整え、**residual** が勾配の配管を保証し、**layer norm** が巡航中のスケールを管理し、**dropout** が過学習を見張る。論文のアーキテクチャは、この分担表そのものです。
 
 ## まとめ
 
