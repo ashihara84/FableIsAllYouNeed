@@ -94,3 +94,38 @@ assert V.shape == (n, d_v)
 assert (Q @ K.T).shape == (n, n)
 
 print("ok: すべての assert を通過しました")
+
+
+# --- 演習 問4(描画): 「F」の字に並べた点へ行列を掛けて変換を観察する ---
+# matplotlib が必要。実行検証外・掲載のみ。`A` を R / S / P に差し替えて観察する。
+def draw_transform():
+    import matplotlib.pyplot as plt
+
+    # 「F」の字をかたどった点の集合。各行が1つの点(行に積む流儀)
+    points = np.array([
+        [0.0, 0.0], [0.0, 0.5], [0.0, 1.0], [0.0, 1.5], [0.0, 2.0],
+        [0.5, 2.0], [1.0, 2.0],
+        [0.5, 1.0],
+    ])  # shape: (8, 2)
+
+    # 45度回転(行ベクトルに右から掛ける形の回転行列)
+    theta = np.pi / 4
+    A_draw = np.array([
+        [np.cos(theta),  np.sin(theta)],
+        [-np.sin(theta), np.cos(theta)],
+    ])  # shape: (2, 2)
+
+    transformed = points @ A_draw  # (8, 2) @ (2, 2) → (8, 2)。8点を一斉に変換
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.scatter(points[:, 0], points[:, 1], label="before")
+    ax.scatter(transformed[:, 0], transformed[:, 1], label="after")
+    ax.axhline(0, color="gray", linewidth=0.5)
+    ax.axvline(0, color="gray", linewidth=0.5)
+    ax.set_aspect("equal")  # 縦横の縮尺を揃えないと回転が回転に見えない
+    ax.legend()
+    plt.show()
+
+
+if __name__ == "__main__" and False:
+    draw_transform()
