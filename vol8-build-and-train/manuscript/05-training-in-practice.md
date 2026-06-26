@@ -1,20 +1,16 @@
 # 第5章 訓練の実際 — 小さく回して観察する
 
 
-部品は、すべて揃いました。
+部品は、すべて揃いました。第1章で第7巻の部品を Transformer に組み上げて PyTorch に卒業し、第2章で対訳コーパスを BPE で ID 列にしてバッチに詰め、第3章で forward → loss → backward → update の4拍子に label smoothing を組み込み、第4章で最後の道具 Adam と warmup を中身まで開けて手に入れました。
 
-第1章で、第7巻の部品を Transformer に組み上げ、自作スタックの限界を実測して PyTorch に卒業しました。第2章で、対訳コーパスを BPE で ID 列にし、バッチに詰めました。第3章で、forward → loss → backward → update の4拍子に label smoothing を組み込みました。第4章で、最後の道具 Adam と warmup を、中身まで開けて手に入れました。
-
-つまり、もう作るものがありません。この章でやることは、たったひとつ。**回す**。
-
-ただし、回し始めてからが本番です。訓練とは「実行したら終わるバッチ処理」ではなく、「経過を観察し、出来上がったものを動かし、おかしければ原因を探す」という往復です。この章では、訓練の実行(5.1)、訓練済みモデルでの生成(5.2)、モデルの中身の観察(5.3)、そして壊れた時の診察(5.4)までを、すべて自分の手で一周します。シリーズ8巻ぶんの部品が初めて全部噛み合って、あなたの Transformer が「翻訳機」として動く章です。
+つまり、もう作るものがありません。この章でやることはひとつ——**回す**。ただし、回し始めてからが本番です。訓練とは「実行したら終わるバッチ処理」ではなく、「経過を観察し、出来上がったものを動かし、おかしければ原因を探す」往復です。この章では訓練の実行(5.1)、生成(5.2)、モデルの中身の観察(5.3)、壊れた時の診察(5.4)までを一周します。シリーズ8巻ぶんの部品が初めて全部噛み合って、あなたの Transformer が「翻訳機」として動く章です。
 
 ## 5.1 [コード] 縮小版 Transformer の訓練実行: loss 曲線、学習の経過観察(数十分〜数時間スケールの設計)
 
 
 ### 規模の確認 — 同じ形、千分の一
 
-最初に、いまから回す訓練の規模を、論文と並べて正直に確認しておきます。
+いまから回す訓練の規模を、論文と並べて正直に確認しておきます。
 
 | | 論文(base) | 私たち |
 |---|---|---|
@@ -25,52 +21,20 @@
 
 データは1万分の一以下、モデルは100分の一。それでも**形は同じ**です。BPE の共有語彙、長さ順のバッチ、encoder-decoder、label smoothing、Adam、warmup——どの部品も論文 Section 5 のとおりに入っています。違うのは目盛りだけです。
 
-目盛りがここまで小さいと、目標も変わります。450万ペアで訓練するモデルは「汎化」を競いますが、250ペアしかない私たちのモデルにとって、最初の関門はもっと手前にあります。**まず、訓練データを暗記できること。** 第3巻6章の言葉で言えばこれは過学習であり、本来は警戒すべきものですが、規模が千分の一の世界では話が逆になります。たった250ペアすら覚えられないモデルは、どこかが壊れています。第1章1.3で「1バッチを丸暗記できるか」をデバッグの定石として紹介しました。この章の訓練は、いわばその拡大版です。暗記が第一関門。未見のペアに何が起きるかは、そのあとで(期待せずに)観察します。
+目盛りがここまで小さいと、目標も変わります。450万ペアで訓練するモデルは「汎化」を競いますが、250ペアしかない私たちのモデルにとって最初の関門はもっと手前にあります。**まず、訓練データを暗記できること。** 第3巻6章の言葉で言えばこれは過学習であり本来は警戒すべきものですが、規模が千分の一の世界では話が逆になります。たった250ペアすら覚えられないモデルは、どこかが壊れています。第1章1.3で「1バッチを丸暗記できるか」をデバッグの定石として紹介しました。この章の訓練はその拡大版です。暗記が第一関門。未見のペアに何が起きるかは、そのあとで(期待せずに)観察します。
 
 ### 訓練スクリプト
 
-コードは `code/ch05/train.py` です。新しい部品はもう登場しません。この章のコードの大半は、前章までの部品の**呼び出し**です。まず冒頭、在庫の搬入から。
+コードは `code/ch05/train.py` です。新しい部品はもう登場しません。この章のコードの大半は前章までの部品の**呼び出し**です。冒頭、在庫の搬入から。
 
 ```python
-# 第8巻 第5章 5.1: 縮小版 Transformer の訓練実行 — 小さく回して観察する
-#
-# 第2章の data.py(コーパス・バッチ)と第3章の model.py(TinyTransformer・
-# label smoothing)を import し、第4章の learning rate スケジュールで訓練する。
-# 規模は「論文の千分の一」: 対訳 250 ペア、語彙 275、パラメータ約 70 万。
-# CPU で数分以内に終わる。実行すると loss の数表を表示し、assert で
-# 「loss が大きく下がる」「訓練データをほぼ暗記できる」ことを確認する。
-import os
-import sys
-import time
-
-import numpy as np
-import torch
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-for _ch in ("ch02", "ch03"):
-    _p = os.path.normpath(os.path.join(_HERE, "..", _ch))
-    if _p not in sys.path:
-        sys.path.append(_p)   # 末尾に足す(ch03 にも train.py があり、先頭だと衝突する)
-
 from data import PAD, BOS, EOS, make_corpus, encode_pair, decode, \
     make_batches, vocab_size                                       # 第2章
 from model import TinyTransformer, label_smoothing_loss, get_device  # 第3章
 
-CKPT_PATH = os.path.join(_HERE, "ch05_checkpoint.pt")
 EPS_LS = 0.1      # 論文 5.4 の ε_ls
-WARMUP = 400      # 総ステップ 1000 に対する warmup(論文は 4000 / 約10万ステップ。5.1節)
+WARMUP = 400      # 総ステップ 1000 に対する warmup(論文は 4000 / 約10万ステップ)
 D_MODEL = 128
-
-
-def pick_device():
-    """計算装置の選択。既定は第3章の get_device()(cuda → mps → cpu)。
-
-    環境変数 FABLE_DEVICE で固定できる。本文の実行例は FABLE_DEVICE=cpu で
-    採取した——この規模では GPU との速度差がほぼなく、CPU は実行のたびに
-    ビットまで同じ結果を返す(GPU は並列和の順序が揺れて結果が微妙に変わる)。
-    """
-    name = os.environ.get("FABLE_DEVICE")
-    return torch.device(name) if name else get_device()
 
 
 def lrate(step, d_model=D_MODEL, warmup_steps=WARMUP):
@@ -78,117 +42,37 @@ def lrate(step, d_model=D_MODEL, warmup_steps=WARMUP):
     return d_model ** -0.5 * min(step ** -0.5, step * warmup_steps ** -1.5)
 ```
 
-`get_device` は第3章で定義したデバイス選択です。中身を再掲しておきます——GPU(cuda)、Apple の GPU(mps)、CPU の順に、使えるものへ自動で逃がす3行でした。
+`get_device`(第3章)は GPU(cuda)、Apple の GPU(mps)、CPU の順に使えるものへ自動で逃がす関数でした。その上に `pick_device` という薄い包みを足してあります。理由は再現性です。GPU(あるいは CPU のスレッド数が違う環境)では、**同じ seed でも実行のたびに結果がわずかに変わります**。並列計算では浮動小数点数の足し算の順序が一定せず、$10^{-16}$ 程度の誤差が混入するからです。普段なら無視できるその誤差が、1000ステップの訓練では雪だるま式に増幅され、最終的に「別の(ただし同程度に良い)モデル」に育ちます。本文の実行例は誰でもビット単位で追試できるよう `FABLE_DEVICE=cpu` で採取しました。あなたの環境では細部の数値や「どのペアを暗記し損ねるか」が変わりますが、これから観察する**現象はすべて同じ**です。
+
+ひとつだけ、この章で新しく決めた数字があります。`WARMUP = 400` です。論文は10万ステップに対して warmup 4000、比率にして4%でした。同じ比率なら私たちは40のはずですが、実測すると規模の小さい世界では比率が保存しませんでした(warmup を短くしすぎるとピークの learning rate が高くなりすぎ、訓練が壊れ気味になります。実測の表は章末演習の問1で扱います)。**規模を変えたら、ハイパーパラメータは測り直す**——この章で何度も出てくる教訓の最初の一例です。
+
+続いて、データの準備と「1トークンずらし」。250ペアのうち25ペアを抜いて「未見」の箱に隔離します(`load_data`)。第3章3.1の急所は `shift` の `[:, :-1]` と `[:, 1:]` の対です。
 
 ```python
-def get_device():     # 第3章 model.py より再掲
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-```
-
-その上に `pick_device` という薄い包みを足してあります。理由は再現性です。実は GPU(あるいは CPU のスレッド数が違う環境)では、**同じ seed でも実行のたびに結果がわずかに変わります**。並列計算では浮動小数点数の足し算の順序が一定せず、$10^{-16}$ 程度の誤差が混入するからです。普段なら無視できるその誤差が、1000ステップの訓練では雪だるま式に増幅され、最終的に「別の(ただし同程度に良い)モデル」に育ちます——訓練とは、それほど初期値と途中経過に敏感な計算なのです。本文の実行例は、誰でもビット単位で追試できるよう `FABLE_DEVICE=cpu` で採取しました。あなたの環境では細部の数値や「どのペアを暗記し損ねるか」が変わりますが、これから観察する**現象はすべて同じ**です。
-
-ひとつだけ、この章で新しく決めた数字があります。`WARMUP = 400` です。論文は10万ステップに対して warmup 4000、比率にして4%でした。同じ比率なら私たちは40のはずですが、実測すると規模の小さい世界では比率が保存しませんでした(warmup を短くしすぎるとピークの learning rate が高くなりすぎ、訓練が壊れ気味になります。実測の表は章末演習の問1で扱います)。**規模を変えたら、ハイパーパラメータは測り直す**——この章の最後まで何度も出てくる教訓の、最初の一例です。
-
-続いて、データの準備と「1トークンずらし」。
-
-```python
-def load_data(n_test=25, seed=42):
-    """第2章のコーパスを ID 化し、訓練 225 / 未見(テスト)25 ペアに分ける。"""
-    corpus = make_corpus()
-    encoded = [encode_pair(s, t) for s, t in corpus]
-    rng = np.random.default_rng(seed)
-    test_idx = set(rng.permutation(len(corpus))[:n_test].tolist())
-    train_pairs = [encoded[i] for i in range(len(corpus)) if i not in test_idx]
-    test_pairs = [encoded[i] for i in sorted(test_idx)]
-    train_raw = [corpus[i] for i in range(len(corpus)) if i not in test_idx]
-    test_raw = [corpus[i] for i in sorted(test_idx)]
-    return train_pairs, test_pairs, train_raw, test_raw
-
-
 def shift(tgt, device):
     """第3章 3.1 の1トークンずらし。tgt (B, L) → (tgt_in, tgt_out)。
-
-    tgt の各行は [BOS, y1..yn, EOS, PAD...]。
     tgt_in = [BOS, y1..yn, ...] / tgt_out = [y1..yn, EOS, ...](PAD は損失で無視)。
     """
     tgt = torch.from_numpy(tgt).to(device)
     return tgt[:, :-1], tgt[:, 1:]
 ```
 
-250ペアのうち25ペアを抜いて「未見」の箱に隔離します。`shift` が第3章3.1の急所——`[:, :-1]` と `[:, 1:]` の対です。この2つの添字を5.4でわざと壊しますから、いまのうちに正しい形を目に焼き付けておいてください。
+この2つの添字を5.4でわざと壊しますから、いまのうちに正しい形を目に焼き付けておいてください。
 
-観察用の物差しを2つ用意します。どちらも teacher forcing(第6巻6章)下、つまり「正解の続きを見せながら次の1トークンを当てさせる」測り方です。
-
-```python
-@torch.no_grad()
-def mean_loss(model, pairs, device):
-    """与えたペア集合の平均 loss(label smoothing 付き。訓練と同じ物差し)。"""
-    model.eval()
-    rng = np.random.default_rng(0)
-    batches, _ = make_batches(pairs, batch_size=len(pairs), rng=rng)
-    total, count = 0.0, 0
-    for src, tgt in batches:
-        src = torch.from_numpy(src).to(device)
-        tgt_in, tgt_out = shift(tgt, device)
-        n_tok = int((tgt_out != PAD).sum())
-        total += label_smoothing_loss(model(src, tgt_in), tgt_out,
-                                      eps=EPS_LS, pad_id=PAD).item() * n_tok
-        count += n_tok
-    model.train()
-    return total / count
-
-
-@torch.no_grad()
-def token_accuracy(model, pairs, device):
-    """teacher forcing 下の次トークン正解率(PAD 除外)。暗記の進み具合の物差し。"""
-    model.eval()
-    rng = np.random.default_rng(0)
-    batches, _ = make_batches(pairs, batch_size=len(pairs), rng=rng)
-    hit, count = 0, 0
-    for src, tgt in batches:
-        src = torch.from_numpy(src).to(device)
-        tgt_in, tgt_out = shift(tgt, device)
-        pred = model(src, tgt_in).argmax(dim=-1)
-        keep = tgt_out != PAD
-        hit += int((pred[keep] == tgt_out[keep]).sum())
-        count += int(keep.sum())
-    model.train()
-    return hit / count
-```
+観察用の物差しを2つ用意します(`mean_loss`・`token_accuracy`)。どちらも teacher forcing(第6巻6章)下、つまり「正解の続きを見せながら次の1トークンを当てさせる」測り方です。`mean_loss` は訓練と同じ label smoothing 付きの平均 loss、`token_accuracy` は PAD を除いた次トークン正解率(暗記の進み具合の物差し)です。
 
 そして訓練本体。第3巻4章以来ずっと同じ4拍子に、第4章のスケジュールを毎ステップ重ねるだけです。
 
 ```python
 def train_model(epochs=125, batch_size=32, seed=42, device=None, log=True):
-    """訓練本体。第3章の4拍子 + 第4章のスケジュール。返り値は (model, 数表の行リスト)。"""
-    torch.manual_seed(seed)
-    rng = np.random.default_rng(seed)
-    device = device or pick_device()
-
-    train_pairs, test_pairs, _, _ = load_data()
+    ...
     model = TinyTransformer(vocab_size, d_model=D_MODEL, h=4, N=2,
                             d_ff=256, p_drop=0.1, max_len=64).to(device)
-    # 論文 5.3 と同じ Adam の設定。lr は毎ステップ式から上書きするので初期値はダミー
+    # 論文 5.3 と同じ Adam。lr は毎ステップ式から上書きするので初期値はダミー
     opt = torch.optim.Adam(model.parameters(), lr=1.0, betas=(0.9, 0.98), eps=1e-9)
-
-    if log:
-        n_params = sum(p.numel() for p in model.parameters())
-        print("device=%s  params=%s  train=%d pairs  test=%d pairs" %
-              (device, format(n_params, ","), len(train_pairs), len(test_pairs)))
-        print()
-        print("%5s  %9s  %9s  %9s  %6s" %
-              ("step", "lr", "loss(訓練)", "loss(未見)", "正解率"))
-
-    rows = []
-    step = 0
-    t0 = time.time()
+    ...
     for epoch in range(1, epochs + 1):
         batches, _ = make_batches(train_pairs, batch_size, rng=rng)  # 長さ順(2.3節)
-        model.train()
         for src, tgt in batches:
             step += 1
             lr = lrate(step)
@@ -202,58 +86,9 @@ def train_model(epochs=125, batch_size=32, seed=42, device=None, log=True):
             opt.zero_grad()
             loss.backward()                                    # 3. backward
             opt.step()                                         # 4. update
-        if epoch == 1 or epoch % 12 == 0 or epoch == epochs:
-            tr = mean_loss(model, train_pairs, device)
-            te = mean_loss(model, test_pairs, device)
-            acc = token_accuracy(model, train_pairs, device)
-            rows.append((step, lr, tr, te, acc))
-            if log:
-                print("%5d  %9.6f  %9.3f  %9.3f  %6.3f" % (step, lr, tr, te, acc))
-    if log:
-        print("\n訓練時間: %.1f 秒" % (time.time() - t0))
-    return model, rows
 ```
 
-最後に、訓練済みモデルを保存して使い回す入口(5.2以降の各スクリプトがここから入ります)と、実行部です。
-
-```python
-def load_or_train(device=None):
-    """チェックポイントがあれば復元、なければ訓練して保存(5.2 以降の入口)。"""
-    device = device or pick_device()
-    model = TinyTransformer(vocab_size, d_model=D_MODEL, h=4, N=2,
-                            d_ff=256, p_drop=0.1, max_len=64).to(device)
-    if os.path.exists(CKPT_PATH):
-        state = torch.load(CKPT_PATH, map_location=device, weights_only=True)
-        model.load_state_dict(state)
-    else:
-        model, _ = train_model(device=device, log=False)
-        torch.save(model.state_dict(), CKPT_PATH)
-    model.eval()
-    return model, device
-
-
-if __name__ == "__main__":
-    device = pick_device()
-    model, rows = train_model(device=device)
-
-    # --- assert 1: loss が大きく下がる(最初の記録の 1/5 以下) ---
-    first_tr, last_tr = rows[0][2], rows[-1][2]
-    assert last_tr < first_tr / 5, "訓練 loss が 1/5 以下まで下がっていない"
-
-    # --- assert 2: 暗記の達成(teacher forcing 下のトークン正解率 95% 以上) ---
-    train_pairs, test_pairs, _, _ = load_data()
-    acc_train = token_accuracy(model, train_pairs, device)
-    assert acc_train > 0.95, "訓練データを暗記できていない: %.3f" % acc_train
-
-    # --- 観察: label smoothing の床(暗記し切っても loss(LS) はゼロにならない) ---
-    print("最終 loss(訓練) = %.3f / 素の cross-entropy なら暗記でほぼ 0 になるが、" % last_tr)
-    print("label smoothing が ε=0.1 ぶんの床を作る(3.2節・演習で見た現象の再確認)")
-
-    torch.save(model.state_dict(), CKPT_PATH)
-    print("checkpoint saved: %s" % os.path.basename(CKPT_PATH))
-    print("ok: loss %.3f → %.3f(1/%d)、訓練データの次トークン正解率 %.3f" %
-          (first_tr, last_tr, round(first_tr / last_tr), acc_train))
-```
+訓練済みモデルを保存して使い回す入口 `load_or_train`(5.2以降の各スクリプトがここから入る — チェックポイントがあれば復元、なければ訓練して保存)も同じファイルにあります。全文と動作確認は `code/ch05/train.py`(`python3` で通過。実行すると loss の数表を表示し、「loss が 1/5 以下まで下がる」「訓練データをほぼ暗記できる」ことを assert で確認します)。
 
 ### 実行と、数表の読み方
 
@@ -283,19 +118,19 @@ checkpoint saved: ch05_checkpoint.pt
 ok: loss 7.726 → 0.943(1/8)、訓練データの次トークン正解率 0.999
 ```
 
-これが本書で初めて目にする、**本物の訓練ログ**です。グラフにする前に、数表のまま読めるようになりましょう。見どころは5つあります。
+本書で初めて目にする、**本物の訓練ログ**です。グラフにする前に数表のまま読めるようになりましょう。見どころは5つあります。
 
 **1行目: 当てずっぽうより悪い場所から始まる。** 語彙は275なので、一様分布で当てずっぽうに答えるときの cross-entropy は $\ln 275 \approx 5.6$ です。ところが初期 loss は 7.7。初期化直後のモデルの出力分布は一様ではなく、でたらめな方向に**偏っている**ので、当てずっぽうにすら負けるのです。最初の数ステップの仕事は、まず分布を平らに均すことです。
 
 **2行目: 序盤の急降下。** わずか96ステップで 7.7 → 1.5。学習の進みはこの時期が最も速く、しかも `lr` の列を見ると learning rate はまだ warmup の坂を登っている途中(ピークの4分の1)です。小さな歩幅でも、坂の急なうちはどんどん下れます。
 
-**3〜4行目以降: 床に着く。** loss(訓練)は 1.0 前後で頭打ちになります。下がらなくなったのではなく、**これ以上は下がれない**のです。正解率の列を見てください——0.99、つまりほぼ暗記が完了しています。それでも loss が 0 に向かわないのは、第3章3.2の label smoothing が「正解に確率 0.9、残り 0.1 は全語彙にばら撒いた分布」を的にしているからです。モデルがその的を完璧に射抜いても、的自身の不確かさのぶん(この語彙サイズで約0.9)は決して下回れません。第3章の演習で「label smoothing は perplexity を悪くする」と確認しました。その床を、いま実物の訓練ログとして見ています。**loss の絶対値は、何を損失にしているかを知らないと読めない**——という良い実例です。
+**3〜4行目以降: 床に着く。** loss(訓練)は 1.0 前後で頭打ちになります。下がらなくなったのではなく、**これ以上は下がれない**のです。正解率は 0.99、つまりほぼ暗記が完了しています。それでも loss が 0 に向かわないのは、第3章3.2の label smoothing が「正解に確率 0.9、残り 0.1 は全語彙にばら撒いた分布」を的にしているからです。モデルがその的を完璧に射抜いても、的自身の不確かさのぶん(この語彙サイズで約0.9)は決して下回れません。第3章の演習で確認した「label smoothing は perplexity を悪くする」その床を、いま実物の訓練ログとして見ています。**loss の絶対値は、何を損失にしているかを知らないと読めない**——という良い実例です。
 
-**loss(未見)の列: 汎化の気配。** 訓練に一度も出していない25ペアの loss も 7.7 → 1.1 まで下がっています。訓練 loss との差は 0.2 程度。第3巻6章の物差しで言えば、過学習はしているが破綻はしていない、という位置です。このコーパスは「型」が強い(同じ文型の組み合わせが大量にある)ので、暗記の副産物として型が汎化するのです。本当に汎化したのかどうかは、次の節で実際に翻訳させて確かめます。
+**loss(未見)の列: 汎化の気配。** 訓練に一度も出していない25ペアの loss も 7.7 → 1.1 まで下がっています。訓練 loss との差は 0.2 程度。第3巻6章の物差しで言えば、過学習はしているが破綻はしていない位置です。このコーパスは「型」が強い(同じ文型の組み合わせが大量にある)ので、暗記の副産物として型が汎化するのです。本当に汎化したのかは次の節で実際に翻訳させて確かめます。
 
 **step 960 の凹み。** loss(訓練)が 1.12 に跳ね、正解率が 0.944 に落ちています。バッチの引きと歩幅の相性で、訓練はこの程度には日常的に揺れます(次の記録ではもう戻っています)。1点の悪化で慌てない。**傾向で読む**。これも訓練ログの読み方のうちです。
 
-ここで、1段落だけ立ち止まることを許してください。いま画面を流れていったこの数字の列は、第2巻の終章では読むことすらできなかった式 $lrate = d_{model}^{-0.5}\cdot\min(step^{-0.5},\ step\cdot warmup^{-1.5})$ が、毎ステップ歩幅を決め、第4章で中身まで開けた Adam がその歩幅で勾配を下り、第7巻で1部品ずつテストした attention の塊が、第1巻の `X @ W + b` を数十万回繰り返しながら、損失の坂を下っていった記録です。誰かのライブラリのデモではありません。データの1ペアから、mask の1マスまで、全部あなたが由来を言える機械が、いま学習しました。
+いま画面を流れていったこの数字の列は、第2巻の終章では読むことすらできなかった式 $lrate = d_{model}^{-0.5}\cdot\min(step^{-0.5},\ step\cdot warmup^{-1.5})$ が毎ステップ歩幅を決め、第4章で中身まで開けた Adam がその歩幅で勾配を下り、第7巻で1部品ずつテストした attention の塊が第1巻の `X @ W + b` を数十万回繰り返しながら損失の坂を下っていった記録です。データの1ペアから mask の1マスまで、全部あなたが由来を言える機械が、いま学習しました。
 
 ## 5.2 生成: greedy / サンプリング(温度 — 第4巻6.5の回収)/ beam search(論文6.1 "beam search with a beam size of 4" を読んで実装)
 
@@ -303,39 +138,11 @@ ok: loss 7.726 → 0.943(1/8)、訓練データの次トークン正解率 0.999
 
 訓練は終わりました。では「i like apples を翻訳して」と頼めるかというと——まだできません。
 
-モデルが出力するのは翻訳文ではなく、**次の1トークンの確率分布**です(第6巻1章で言語モデルをそう定義した、そのままです)。文が欲しければ、「分布から1トークン選んでは、それを入力に足してもう一度聞く」を EOS が出るまで繰り返す手続きが必要です。この手続きを**デコーディング(decoding)**と呼びます。訓練とは独立の選択で、同じモデルでも選び方しだいで出てくる文が変わります。この節では代表的な3方式——貪欲法(greedy decoding)、温度付きサンプリング、ビームサーチ(beam search)——を実装します。コードは `code/ch05/generate.py` です。
-
-```python
-# 第8巻 第5章 5.2: 生成 — greedy / 温度サンプリング / beam search
-#
-# 訓練済みの縮小版 Transformer(train.py のチェックポイント)で翻訳を生成する。
-# - greedy: 各ステップで argmax を取る
-# - 温度サンプリング: softmax(z/τ) からサンプルする(第4巻6.5の温度の回収)
-# - beam search: 論文 6.1 "beam search with a beam size of 4 and length penalty
-#   α = 0.6" の実装
-# 実行すると3方式の出力と assert による動作確認が走る。
-import os
-import sys
-
-import numpy as np
-import torch
-import torch.nn.functional as F
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-for _ch in ("ch02", "ch03"):
-    _p = os.path.normpath(os.path.join(_HERE, "..", _ch))
-    if _p not in sys.path:
-        sys.path.append(_p)   # 末尾に足す(ch03 にも train.py があり、先頭だと衝突する)
-
-from data import PAD, BOS, EOS, encode_pair, decode                  # 第2章
-from train import load_data, load_or_train, train_model              # 5.1
-
-MAX_LEN = 20      # 生成の打ち切り長(コーパス最長の倍以上あれば十分)
-```
+モデルが出力するのは翻訳文ではなく、**次の1トークンの確率分布**です(第6巻1章で言語モデルをそう定義したそのままです)。文が欲しければ、「分布から1トークン選んでは、それを入力に足してもう一度聞く」を EOS が出るまで繰り返す手続きが必要です。これを**デコーディング(decoding)**と呼びます。訓練とは独立の選択で、同じモデルでも選び方しだいで出てくる文が変わります。この節では代表的な3方式——貪欲法(greedy decoding)、温度付きサンプリング、ビームサーチ(beam search)——を実装します。コードは `code/ch05/generate.py` です(`MAX_LEN = 20` で生成を打ち切ります)。
 
 ### 方式1: greedy — いちばん確からしい一歩を積む
 
-最も素朴な方式です。各ステップで、分布の最大値(argmax)を取る。それだけです。
+最も素朴な方式です。各ステップで分布の最大値(argmax)を取る。それだけです。
 
 ```python
 @torch.no_grad()
@@ -353,7 +160,7 @@ def greedy_decode(model, src_ids, device, max_len=MAX_LEN):
     return ys[1:]
 ```
 
-ループの1周ごとに `ys` が1トークン伸び、伸びた `ys` を decoder に入れ直します。訓練時は正解列を一括で入れました(teacher forcing)が、生成時は**自分の出力を自分で食べる**——この違いが5.4で効いてくるので覚えておいてください。なお、毎周 encoder から計算し直すのは計算の無駄(実用系では encoder の出力や K, V を使い回します)ですが、この規模では一瞬なので、読みやすさを優先しています。
+ループの1周ごとに `ys` が1トークン伸び、伸びた `ys` を decoder に入れ直します。訓練時は正解列を一括で入れました(teacher forcing)が、生成時は**自分の出力を自分で食べる**——この違いが5.4で効いてくるので覚えておいてください。なお毎周 encoder から計算し直すのは無駄(実用系では encoder 出力や K, V を使い回します)ですが、この規模では一瞬なので読みやすさを優先しています。
 
 実行結果の前半を見てみましょう。
 
@@ -375,9 +182,9 @@ greedy が外した訓練ペア(暗記し損ねた場所):
 
 第一関門は通過です——訓練225ペアのうち223ペア(99%)を完全一致で再生できました(暗記達成)。そして驚くのは、未見の25ペアでも96%当たっていることです。種を明かせば、未見ペアの大半は「i eat dogs」のような**文型の組み合わせ**で、部品(i、eat、dogs、それぞれの訳語と語順)はすべて訓練中に別の組み合わせで見ています。型が汎化した——5.1の loss(未見)が下がっていた正体がこれです。
 
-失敗の中身も観察しがいがあります。最後まで暗記できなかった2ペア(「ごめん なさい」「いいえ」)も、未見で外した「good night」も、すべて**文型の支えがない定型句**です。組み合わせの型に乗れない丸暗記項目は、コーパスに1回しか出てこないぶん、最後まで覚えにくい。しかも「good night」への誤答が「こんばんは」——good evening の記憶に引きずられた、間違い方としては筋のよい誤答です。何ができて何ができないかが、規模千分の一でもこんなにはっきり観察できます。
+失敗の中身も観察しがいがあります。最後まで暗記できなかった2ペア(「ごめん なさい」「いいえ」)も、未見で外した「good night」も、すべて**文型の支えがない定型句**です。組み合わせの型に乗れない丸暗記項目は、コーパスに1回しか出てこないぶん最後まで覚えにくい。しかも「good night」への誤答が「こんばんは」——good evening の記憶に引きずられた、間違い方としては筋のよい誤答です。何ができて何ができないかが、規模千分の一でもこんなにはっきり観察できます。
 
-greedy は速くて素朴ですが、実は構造的な弱点を抱えています。いまのモデルは暗記がほぼ完璧なので、その弱点はほとんど顔を出しません。方式3で、わざと訓練を途中で止めたモデルを使ってあぶり出します。
+greedy は速くて素朴ですが、実は構造的な弱点を抱えています。いまのモデルは暗記がほぼ完璧なのでその弱点はほとんど顔を出しません。方式3で、わざと訓練を途中で止めたモデルを使ってあぶり出します。
 
 ### 方式2: 温度サンプリング — 第4巻の予告を回収する
 
@@ -387,23 +194,16 @@ argmax の代わりに、分布から**サンプルする**ことを考えます
 
 $$\mathrm{softmax}_\tau(\mathbf{z}) = \mathrm{softmax}\!\left(\frac{\mathbf{z}}{\tau}\right)$$
 
-$\tau < 1$ で分布は尖り(低温=堅実)、$\tau > 1$ でなだらかになる(高温=多彩)のでした。コードは greedy の argmax を3行入れ替えるだけです。
+$\tau < 1$ で分布は尖り(低温=堅実)、$\tau > 1$ でなだらかになる(高温=多彩)のでした。コードは greedy の argmax を入れ替えるだけです。
 
 ```python
 @torch.no_grad()
 def sample_decode(model, src_ids, tau, device, g, max_len=MAX_LEN):
     """温度 τ 付きサンプリング。softmax(z/τ) から1トークンずつ引く(第4巻6.5)。"""
-    src = torch.tensor([src_ids], dtype=torch.long, device=device)
-    ys = [BOS]
-    for _ in range(max_len):
-        tgt_in = torch.tensor([ys], dtype=torch.long, device=device)
+    ...
         z = model(src, tgt_in)[0, -1]                # 最後の位置のスコア (vocab,)
         probs = F.softmax(z / tau, dim=-1).cpu()     # τ で割ってから softmax
         next_id = int(torch.multinomial(probs, 1, generator=g))
-        ys.append(next_id)
-        if next_id == EOS:
-            break
-    return ys[1:]
 ```
 
 同じ入力に対して、温度を変えながら30回ずつ生成してみます。
@@ -426,7 +226,7 @@ def sample_decode(model, src_ids, tau, device, g, max_len=MAX_LEN):
 >
 > 訳: ビームサーチを、ビーム幅4・長さペナルティ α = 0.6 で用いた。これらのハイパーパラメータは開発セットでの実験により選んだ。推論時の最大出力長は入力長 + 50 とし、ただし可能なら早期に打ち切る。
 
-beam search の需要を体感するために、方式1で予告した greedy の構造的な弱点をあぶり出します。使うのは、**わざと25エポックで打ち切った「訓練途中」のモデル**です(暗記が完了したモデルは滅多に詰まらないので、確信が固まる前のモデルで観察します——これは debug の常套手段でもあります)。たとえばこのモデルに「hello」を訳させると、greedy は「こんこんこんこん……」と繰り返し始めます。「こんにちは」と「こんばんは」はどちらも「こん」で始まるため、続きを決め切れないモデルにとって、次の一歩の最有力候補がまた「こん」になってしまうのです。各ステップの選択としては毎回最善でも、**文全体として最善とは限らない**。そして greedy は**一度選んだ道を二度と戻れません**。チャットAIが同じフレーズを繰り返し始めるあの現象も、これと同族です(5.4では、これとは別の「バグ由来の繰り返し」を見ます)。
+beam search の需要を体感するために、方式1で予告した greedy の構造的な弱点をあぶり出します。使うのは**わざと25エポックで打ち切った「訓練途中」のモデル**です(暗記が完了したモデルは滅多に詰まらないので、確信が固まる前のモデルで観察します——debug の常套手段でもあります)。たとえばこのモデルに「hello」を訳させると、greedy は「こんこんこんこん……」と繰り返し始めます。「こんにちは」と「こんばんは」はどちらも「こん」で始まるため、続きを決め切れないモデルにとって次の一歩の最有力候補がまた「こん」になってしまうのです。各ステップの選択としては毎回最善でも、**文全体として最善とは限らない**。そして greedy は**一度選んだ道を二度と戻れません**。チャットAIが同じフレーズを繰り返し始めるあの現象も、これと同族です(5.4では別の「バグ由来の繰り返し」を見ます)。
 
 beam search はこの「一本道」をやめて、**有望な仮説を beam size 本だけ並走させる**方式です。毎ステップ、生きている各仮説を上位候補で延長し、累積の対数確率が高い上位4本(beam size 4)だけ残す。EOS に到達した仮説は完了プールに移し、最後に完了仮説の中から勝者を選びます。
 
@@ -434,29 +234,17 @@ beam search はこの「一本道」をやめて、**有望な仮説を beam siz
 
 $$\mathrm{score}(Y) = \frac{\log P(Y)}{lp(Y)}, \qquad lp(Y) = \left(\frac{5 + |Y|}{6}\right)^{0.6}$$
 
-とします($|Y|$ は出力トークン数。論文が引用 [38](GNMT)から借りた形で、$\alpha = 0.6$ はその効き具合)。実装します。
+とします($|Y|$ は出力トークン数。論文が引用 [38](GNMT)から借りた形で、$\alpha = 0.6$ はその効き具合)。実装の核心はこうです。
 
 ```python
-def length_penalty(n_tokens, alpha=0.6):
-    """GNMT 流の長さ補正 lp(Y) = ((5 + |Y|) / 6)^α。論文 6.1 が参照する形。"""
-    return ((5 + n_tokens) / 6.0) ** alpha
-
-
 @torch.no_grad()
 def beam_search(model, src_ids, device, beam_size=4, alpha=0.6, max_len=MAX_LEN):
-    """論文 6.1: beam size 4・length penalty α=0.6 の beam search。
-
-    各仮説は (トークン列, 累積 log 確率)。毎ステップ、生きている仮説を
-    beam_size 通りずつ延長し、全候補から上位 beam_size 本だけ残す。
-    EOS に到達した仮説は完了プールへ移し、最後に長さ補正付きスコア
-    logP / lp(Y) で勝者を決める。返り値は (BOS を除いた ID 列, スコア)。
-    """
-    src = torch.tensor([src_ids], dtype=torch.long, device=device)
-    alive = [([BOS], 0.0)]
+    """論文 6.1: beam size 4・length penalty α=0.6 の beam search。"""
+    alive = [([BOS], 0.0)]                            # 各仮説は (トークン列, 累積 logP)
     finished = []
     for _ in range(max_len):
         candidates = []
-        for ys, logp in alive:
+        for ys, logp in alive:                        # 生きている各仮説を延長
             tgt_in = torch.tensor([ys], dtype=torch.long, device=device)
             log_probs = F.log_softmax(model(src, tgt_in)[0, -1], dim=-1).cpu()
             top = torch.topk(log_probs, beam_size)
@@ -464,111 +252,21 @@ def beam_search(model, src_ids, device, beam_size=4, alpha=0.6, max_len=MAX_LEN)
                 candidates.append((ys + [tok], logp + lp_tok))
         candidates.sort(key=lambda c: c[1], reverse=True)
         alive = []
-        for ys, logp in candidates:
-            if ys[-1] == EOS:
-                finished.append((ys, logp))
-            else:
-                alive.append((ys, logp))
+        for ys, logp in candidates:                   # 上位 beam_size 本だけ残す
+            (finished if ys[-1] == EOS else alive).append((ys, logp))
             if len(alive) == beam_size:
                 break
-        if not alive:                                 # 全仮説が EOS に到達
+        if not alive:
             break
-    finished.extend(alive)                            # 打ち切られた仮説も候補に残す
-    best, best_logp = max(
+    finished.extend(alive)
+    best, best_logp = max(                            # 長さ補正付きスコアで勝者
         finished, key=lambda c: c[1] / length_penalty(len(c[0]) - 1, alpha))
     return best[1:], best_logp / length_penalty(len(best) - 1, alpha)
 ```
 
-`max_len` による打ち切りは、論文の「入力長 + 50、ただし早期終了」の縮小版です(私たちの文は短いので定数20で足ります)。残りの実行部もまとめて掲げます。
+`length_penalty(n, alpha)` は `((5 + n) / 6.0) ** alpha` です。`max_len` による打ち切りは論文の「入力長 + 50、ただし早期終了」の縮小版(私たちの文は短いので定数20で足ります)。全文と動作確認は `code/ch05/generate.py`(`python3` で通過。greedy / 温度 / beam の3方式と assert が走ります)。
 
-```python
-def seq_accuracy(model, raw_pairs, device, decode_fn):
-    """生成文と正解文の完全一致率(文字列で比較)。"""
-    hit = 0
-    for s, t in raw_pairs:
-        src_ids, _ = encode_pair(s, t)
-        if decode(decode_fn(model, src_ids, device)) == t:
-            hit += 1
-    return hit / len(raw_pairs)
-
-
-if __name__ == "__main__":
-    model, device = load_or_train()
-    _, _, train_raw, test_raw = load_data()
-
-    # --- (1) greedy: 暗記の確認と、未見ペアの観察 ----------------------------
-    acc_train = seq_accuracy(model, train_raw, device, greedy_decode)
-    acc_test = seq_accuracy(model, test_raw, device, greedy_decode)
-    print("greedy 完全一致率: 訓練 %.3f / 未見 %.3f" % (acc_train, acc_test))
-    assert acc_train > 0.85, "訓練ペアの大半を翻訳できていない: %.3f" % acc_train
-
-    print("\n未見ペアの greedy 翻訳(左: モデル出力, 右: 正解):")
-    for s, t in test_raw[:6]:
-        src_ids, _ = encode_pair(s, t)
-        out = decode(greedy_decode(model, src_ids, device))
-        mark = "o" if out == t else "x"
-        print("  %s %-28s -> %s | %s" % (mark, s, out, t))
-
-    print("\ngreedy が外した訓練ペア(暗記し損ねた場所):")
-    for s, t in train_raw:
-        src_ids, _ = encode_pair(s, t)
-        out = decode(greedy_decode(model, src_ids, device))
-        if out != t:
-            print("  %r -> %r(正解: %r)" % (s, out, t))
-
-    # --- (2) 温度サンプリング(第4巻6.5の回収) ------------------------------
-    demo = ("i like apples", "わたし は りんご が すき です")
-    s, t = demo if demo in train_raw else train_raw[0]
-    src_ids, _ = encode_pair(s, t)
-    print("\n温度サンプリング: src = %r(正解: %r)、各温度で30回" % (s, t))
-    g = torch.Generator().manual_seed(42)
-    results = {}
-    for tau in [0.5, 1.0, 2.0]:
-        outs = [decode(sample_decode(model, src_ids, tau, device, g))
-                for _ in range(30)]
-        n_ok = sum(o == t for o in outs)
-        n_distinct = len(set(outs))
-        results[tau] = (n_ok, n_distinct)
-        print("  tau=%.1f: 正解 %2d/30, 異なる出力 %2d 種  外した例: %r" %
-              (tau, n_ok, n_distinct,
-               next((o for o in outs if o != t), "(なし)")))
-    assert results[0.5][0] >= results[2.0][0], "低温の方が堅実なはず"
-    assert results[2.0][1] >= results[0.5][1], "高温の方が多彩なはず"
-
-    # --- (3) beam search(論文 6.1: beam size 4, α=0.6) ----------------------
-    # 暗記が完了したモデルでは greedy はほとんど詰まらない。greedy の構造的な
-    # 弱点は、確信が固まる前のモデルでよく見える——25エポックで打ち切った
-    # 「訓練途中」のモデルを作り、greedy が外したペアを beam search と比べる
-    print("\n訓練途中(25エポック)のモデルで、greedy が外した訓練ペア(最大3件):")
-    half, _ = train_model(epochs=25, device=device, log=False)
-    half.eval()
-    shown = 0
-    for s, t in train_raw:
-        src_ids, _ = encode_pair(s, t)
-        out_g = decode(greedy_decode(half, src_ids, device))
-        if out_g == t:
-            continue
-        out_b, score = beam_search(half, src_ids, device)
-        print("  src: %r(正解: %r)" % (s, t))
-        print("    greedy: %r" % out_g)
-        print("    beam  : %r(score %.3f)" % (decode(out_b), score))
-        shown += 1
-        if shown == 3:
-            break
-    if shown == 0:
-        print("  (この環境では25エポックで全ペア正解 — epochs を減らして再観察を)")
-
-    # 仕上げ: 暗記完了モデルでも beam は greedy を下回らない(この規模では同点が多い)
-    acc_beam = seq_accuracy(
-        model, test_raw, device,
-        lambda m, ids, dev: beam_search(m, ids, dev)[0])
-    print("\nbeam(未見)完全一致率: %.3f(greedy は %.3f)" % (acc_beam, acc_test))
-    assert acc_beam >= acc_test - 1e-9, "この規模では beam が greedy を下回らないはず"
-
-    print("\nok: greedy / 温度サンプリング / beam search の3方式が動作")
-```
-
-beam の働きどころを、実行結果で確認します。
+beam の働きどころを実行結果で確認します。
 
 ```
 訓練途中(25エポック)のモデルで、greedy が外した訓練ペア(最大3件):
@@ -587,62 +285,28 @@ beam(未見)完全一致率: 0.960(greedy は 0.960)
 
 1例目が beam search の教科書的な勝利です。greedy は「こん」の無限ループに沈みましたが、beam は「こん」を選んだ直後には僅差で負けていた別の仮説を4本のうちに生かしておき、数歩先の累積スコアで逆転して「こんにちは」に到達しました。greedy が打ち切り長いっぱいまで暴走したのに対し、文として完結する仮説が長さ補正込みのスコアで勝った——仕組みどおりの挙動です。
 
-ただし2例目・3例目は、beam が万能ではないことも正直に教えてくれます。「you are welcome」では greedy よりましな(しかし不正解の)文に留まり、「see you tomorrow」では beam も greedy と同じ「た た た」に落ちました。4本の仮説は全探索ではありません。モデル自身の確率がでたらめなら、その中の上位4本もでたらめです。**beam search は「モデルは正しいのに選び方で損をする」場面を救う道具であって、モデルの未熟さは救えない**——この区別は5.4の診察でも効いてきます。
+ただし2例目・3例目は beam が万能でないことも正直に教えてくれます。「you are welcome」では greedy よりましな(しかし不正解の)文に留まり、「see you tomorrow」では beam も greedy と同じ「た た た」に落ちました。4本の仮説は全探索ではありません。モデル自身の確率がでたらめなら、その中の上位4本もでたらめです。**beam search は「モデルは正しいのに選び方で損をする」場面を救う道具であって、モデルの未熟さは救えない**——この区別は5.4の診察でも効いてきます。
 
 最後の行は、暗記が完了した本来のモデルでの比較です。未見25ペアの一致率は greedy と beam で同じ 0.960。この規模では暗記が支配的で、よく訓練されたモデルなら greedy で十分なのです。論文が beam search を標準装備にしているのは、本物の翻訳では「確信が固まり切らない場面」——まさに途中モデルが見せたあの状況——が、訓練をどれだけ続けても文のどこかで必ず起きるからです。
 
-引用した 6.1 にはもうひとつ、まだ触れていない道具が出てきます。論文は評価の際、最後に保存した5個(big は20個)のチェックポイントの**パラメータを平均した**モデルを使います(checkpoint averaging)。訓練終盤のモデルは loss の谷底のまわりを揺れ続けるので、揺れの平均を取ると谷底に近いモデルが得られる——という発想です。私たちの規模では効果が測れないため概観に留めますが、6.1 を読むのに必要な知識はこれで全部です。
+引用した 6.1 にはもうひとつ、まだ触れていない道具が出てきます。論文は評価の際、最後に保存した5個(big は20個)のチェックポイントの**パラメータを平均した**モデルを使います(checkpoint averaging)。訓練終盤のモデルは loss の谷底のまわりを揺れ続けるので、揺れの平均を取ると谷底に近いモデルが得られる、という発想です。私たちの規模では効果が測れないため概観に留めますが、6.1 を読むのに必要な知識はこれで全部です。
 
 ## 5.3 attention マップの観察: 訓練済みモデルが「どこを見ているか」(第6巻7.3と同じ図を、今度は自作Transformerで)
 
-第6巻7章で、attention 付き seq2seq の重み行列を眺めたときのことを覚えているでしょうか。文字列反転タスクで、誰も教えていないのに「後ろから順に写す」という手順が、右上から左下への逆対角線として行列に浮かび上がりました。あの図を、今度は**自作の Transformer**で、しかも玩具の反転ではなく(ミニチュアとはいえ)本物の翻訳で描きます。観察するのは decoder の cross-attention——「出力の各トークンを書くとき、入力のどこを見たか」を握っている、第7巻5章の3種の attention の一角です。
+第6巻7章で、attention 付き seq2seq の重み行列を眺めたときのことを覚えているでしょうか。文字列反転タスクで、誰も教えていないのに「後ろから順に写す」という手順が右上から左下への逆対角線として行列に浮かび上がりました。あの図を、今度は**自作の Transformer**で、しかも玩具の反転ではなく(ミニチュアとはいえ)本物の翻訳で描きます。観察するのは decoder の cross-attention——「出力の各トークンを書くとき、入力のどこを見たか」を握っている、第7巻5章の3種の attention の一角です。
 
-ひとつ実装上の都合があります。第3章の `model.py` は attention の重みを保存しない設計で、本書の規約により前章のファイルには手を入れません。そこで PyTorch の **forward hook** を使います。hook はモジュールの forward が呼ばれるたびに「入力と出力を横取りして好きな処理を挟む」仕掛けで、モデルに覗き穴を開けるのにちょうどよい道具です。覗き穴の中では、横取りした入力とモジュール自身の $W^Q, W^K$ を使って、式(1)の前半(内積 → スケール → mask → softmax)を計算し直します。eval モードでは dropout が何もしないので、この再計算は forward 内で実際に使われた重みと完全に一致します。コードは `code/ch05/attention_map.py` です。
+ひとつ実装上の都合があります。第3章の `model.py` は attention の重みを保存しない設計で、本書の規約により前章のファイルには手を入れません。そこで PyTorch の **forward hook** を使います。hook はモジュールの forward が呼ばれるたびに「入力と出力を横取りして好きな処理を挟む」仕掛けで、モデルに覗き穴を開けるのにちょうどよい道具です。覗き穴の中では、横取りした入力とモジュール自身の $W^Q, W^K$ を使って式(1)の前半(内積 → スケール → mask → softmax)を計算し直します。eval モードでは dropout が何もしないので、この再計算は forward 内で実際に使われた重みと完全に一致します。コードは `code/ch05/attention_map.py` です。
 
 ```python
-# 第8巻 第5章 5.3: attention マップの観察 — 訓練済みモデルは「どこを見ているか」
-#
-# 第6巻7.3で attention 付き seq2seq の重み行列に「反転の手順」が浮かび上がるのを
-# 見た。同じ図を、今度は自作の Transformer(の cross-attention)で描く。
-# 第3章の model.py は attention 重みを保存しない設計なので、第3章のファイルには
-# 手を入れず、PyTorch の forward hook で「覗き穴」を開けて重みを取り出す。
-import math
-import os
-import sys
-
-import torch
-import torch.nn.functional as F
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-for _ch in ("ch02", "ch03"):
-    _p = os.path.normpath(os.path.join(_HERE, "..", _ch))
-    if _p not in sys.path:
-        sys.path.append(_p)   # 末尾に足す(ch03 にも train.py があり、先頭だと衝突する)
-
-from data import BOS, encode_pair, decode, itos                       # 第2章
-from train import load_or_train                                       # 5.1
-from generate import greedy_decode                                    # 5.2
-
-
 def probe_attention(mha):
-    """MultiHeadAttention に覗き穴を開ける。
-
-    forward hook で入力 (q_in, k_in, v_in, mask) を横取りし、モジュール自身の
-    W_q, W_k を使って attention 重みを計算し直す(第7巻3章の3拍子の前半2拍)。
-    eval モードでは dropout が恒等写像なので、再計算した重みは forward 内で
-    実際に使われた重みと一致する。返り値: (結果の入れ物, hook のハンドル)。
-    """
+    """MultiHeadAttention に覗き穴を開ける。forward hook で入力を横取りし、
+    モジュール自身の W_q, W_k で attention 重みを計算し直す(第7巻3章の前半2拍)。"""
     store = {}
 
     def hook(module, inputs, output):
         q_in, k_in = inputs[0], inputs[1]
         mask = inputs[3] if len(inputs) > 3 else None
-        B, q_len, _ = q_in.shape
-        k_len = k_in.shape[1]
-
-        def split_heads(x, length):
-            return x.view(B, length, module.h, module.d_k).transpose(1, 2)
-
+        ...
         Q = split_heads(module.W_q(q_in), q_len)
         K = split_heads(module.W_k(k_in), k_len)
         scores = Q @ K.transpose(-2, -1) / math.sqrt(module.d_k)   # 式(1)の中身
@@ -651,75 +315,9 @@ def probe_attention(mha):
         store["A"] = F.softmax(scores, dim=-1).detach().cpu()      # (B, h, q_len, k_len)
 
     return store, mha.register_forward_hook(hook)
-
-
-@torch.no_grad()
-def cross_attention_map(model, src_ids, device):
-    """greedy で翻訳し、最終 decoder 層の cross-attention(ヘッド平均)を返す。
-
-    返り値: (出力トークン列, 重み行列 A (出力長, 入力長))。A の各行は合計1。
-    """
-    out_ids = greedy_decode(model, src_ids, device)
-    store, handle = probe_attention(model.dec_layers[-1].cross_attn)
-    src = torch.tensor([src_ids], dtype=torch.long, device=device)
-    tgt_in = torch.tensor([[BOS] + out_ids[:-1]], dtype=torch.long, device=device)
-    model(src, tgt_in)                       # 翻訳をなぞる1回の forward で重みを採取
-    handle.remove()
-    return out_ids, store["A"][0].mean(dim=0)  # 4ヘッドの平均 (q_len, k_len)
-
-
-def print_map(src_ids, out_ids, A):
-    """重み行列を数値表で表示する(行=出力トークン, 列=入力トークン)。"""
-    src_toks = [itos[i] for i in src_ids]
-    out_toks = [itos[i] for i in out_ids]
-    print(" " * 12 + "".join("%10s" % w for w in src_toks))
-    for r, tok in enumerate(out_toks):
-        print("%12s" % tok + "".join("%10.2f" % v for v in A[r]))
 ```
 
-「he eats fish」を翻訳させ、その瞬間の重みを数値表で見ます。
-
-```python
-if __name__ == "__main__":
-    model, device = load_or_train()
-
-    # --- 観察1: 語順の入れ替え(英 S-V-O → 日 S-O-V)が模様に出る -------------
-    s, t = "he eats fish", "かれ は さかな を たべます"
-    src_ids, _ = encode_pair(s, t)
-    out_ids, A = cross_attention_map(model, src_ids, device)
-    print("src: %r -> 出力: %r" % (s, decode(out_ids)))
-    print("最終 decoder 層の cross-attention(4ヘッドの平均):")
-    print_map(src_ids, out_ids, A)
-
-    src_toks = [itos[i] for i in src_ids]
-    out_toks = [itos[i] for i in out_ids]
-    col = {w: i for i, w in enumerate(src_toks)}
-    row = {w: i for i, w in enumerate(out_toks)}
-
-    assert torch.allclose(A.sum(dim=1), torch.ones(len(out_ids)), atol=1e-4)
-    # 内容語の対応: かれ→he, さかな→fish, たべます→eats(行の argmax で確認)
-    assert int(A[row["かれ</w>"]].argmax()) == col["he</w>"]
-    assert int(A[row["さかな</w>"]].argmax()) == col["fish</w>"]
-    assert int(A[row["たべます</w>"]].argmax()) == col["eats</w>"]
-
-    # --- 観察2: 助詞「を」「が」は動詞を見て書かれる ---------------------------
-    print("\n助詞の行だけ取り出す(を/が を書く瞬間、モデルはどこを見るか):")
-    for s, t in [("he eats fish", "かれ は さかな を たべます"),
-                 ("he wants fish", "かれ は さかな が ほしい です")]:
-        src_ids, _ = encode_pair(s, t)
-        out_ids, A = cross_attention_map(model, src_ids, device)
-        src_toks = [itos[i] for i in src_ids]
-        out_toks = [itos[i] for i in out_ids]
-        particle = "を</w>" if "を</w>" in out_toks else "が</w>"
-        r = out_toks.index(particle)
-        peak = src_toks[int(A[r].argmax())]
-        print("  %r: %s の行の最大重み %.2f は %s の列" %
-              (s, particle, float(A[r].max()), peak))
-
-    print("\nok: cross-attention に翻訳の対応関係が浮かび上がった")
-```
-
-実行結果です。この表を、第6巻のときと同じように、しばらく眺めてください。
+`cross_attention_map` は greedy で翻訳し、最終 decoder 層の cross-attention をヘッド平均で取り出します(`model.dec_layers[-1].cross_attn` に覗き穴を開け、翻訳をなぞる1回の forward で重みを採取)。全文と動作確認は `code/ch05/attention_map.py`(`python3` で通過)。「he eats fish」を翻訳させ、その瞬間の重みを数値表で見ます。
 
 ```
 src: 'he eats fish' -> 出力: 'かれ は さかな を たべます'
@@ -741,9 +339,9 @@ src: 'he eats fish' -> 出力: 'かれ は さかな を たべます'
 
 **第一に、単語の対応表がそのまま浮かんでいます。** 「かれ」を書く瞬間は he を(重み1.00)、「さかな」は fish を(0.75)、「たべます」は eats を(1.00)見ています。誰も単語帳を与えていません。与えたのは対訳ペアと cross-entropy だけです。
 
-**第二に、語順の交差が模様になっています。** 英語は he・eats・fish(S-V-O)、日本語は かれ・さかな・たべます(S-O-V)の順です。表の注目の山を上から追うと、he(1列目)→ fish(3列目)→ eats(2列目)と、**一度右へ飛んでから左へ戻る**——単調な対角線になりません。第6巻の反転タスクでは「逆対角線」という手順が見えました。今度は「目的語と動詞を入れ替える」という、翻訳のもっとも翻訳らしい仕事が、同じ流儀で模様になっています。
+**第二に、語順の交差が模様になっています。** 英語は he・eats・fish(S-V-O)、日本語は かれ・さかな・たべます(S-O-V)の順です。表の注目の山を上から追うと、he(1列目)→ fish(3列目)→ eats(2列目)と、**一度右へ飛んでから左へ戻る**——単調な対角線になりません。第6巻の反転タスクでは「逆対角線」という手順が見えました。今度は「目的語と動詞を入れ替える」という、翻訳のもっとも翻訳らしい仕事が同じ流儀で模様になっています。
 
-**第三に——これがこの表の白眉です——助詞「を」の行を見てください。** 「を」に対応する英単語は存在しません。ではモデルは何を見て「を」を書いたか。eats の列に 0.75 です。観察2を見ると、動詞が wants の文では、助詞「が」がやはり wants を見て(0.73)書かれています。このコーパスでは「たべます」は「〜を」、「ほしい です」は「〜が」を取ります。つまり**助詞の選択は動詞で決まる**のですが、その文法規則をモデルは誰に教わるでもなく発見し、「助詞を書く瞬間は原文の動詞を見る」という参照の形で実装していたのです。attention の重みが例外的に「どこを見たか」を公開してくれるからこそ、こういう発見を指差しで確認できます。
+**第三に——これがこの表の白眉です——助詞「を」の行を見てください。** 「を」に対応する英単語は存在しません。ではモデルは何を見て「を」を書いたか。eats の列に 0.75 です。観察2を見ると、動詞が wants の文では助詞「が」がやはり wants を見て(0.73)書かれています。このコーパスでは「たべます」は「〜を」、「ほしい です」は「〜が」を取ります。つまり**助詞の選択は動詞で決まる**のですが、その文法規則をモデルは誰に教わるでもなく発見し、「助詞を書く瞬間は原文の動詞を見る」という参照の形で実装していたのです。attention の重みが例外的に「どこを見たか」を公開してくれるからこそ、こういう発見を指差しで確認できます。
 
 図にする場合のコードも、第6巻7.3の図7.1とまったく同じ形式で書けます(掲載のみ)。
 
@@ -765,45 +363,15 @@ plt.show()
 
 ## 5.4 うまくいかない時の手引き: loss が下がらない・発散する・同じ語を繰り返す、の典型原因(mask漏れ、lr、ずらし忘れ)
 
-ここまでは、すべてが上手くいく世界線でした。最後の節は、その逆——**壊れた訓練の顔**を見ます。
+ここまでは、すべてが上手くいく世界線でした。最後の節はその逆——**壊れた訓練の顔**を見ます。
 
-Transformer の訓練でつまずく原因は、経験的に少数の定番に集中しています。causal mask の漏れ、learning rate の不調、1トークンずらしの忘れ。ただし「典型原因リスト」を暗記しても、現場ではあまり役に立ちません。バグは原因の顔をして現れず、**症状**の顔をして現れるからです。そこで本書流の手引きはこうです——3つのバグを今から**実際に仕込み**、健常な訓練と同一条件(同じデータ・同じ初期値・同じ1000ステップ)で走らせ、それぞれの症状を観察する。一度でも症状の顔を見ておけば、次に自分のコードで同じ顔を見たとき、容疑者リストが頭に浮かびます。コードは `code/ch05/failure_modes.py` です。
+Transformer の訓練でつまずく原因は、経験的に少数の定番に集中しています。causal mask の漏れ、learning rate の不調、1トークンずらしの忘れ。ただし「典型原因リスト」を暗記しても現場ではあまり役に立ちません。バグは原因の顔をして現れず、**症状**の顔をして現れるからです。そこで本書流の手引きはこうです——3つのバグを今から**実際に仕込み**、健常な訓練と同一条件(同じデータ・同じ初期値・同じ1000ステップ)で走らせ、それぞれの症状を観察する。一度でも症状の顔を見ておけば、次に自分のコードで同じ顔を見たとき容疑者リストが頭に浮かびます。コードは `code/ch05/failure_modes.py` です。
 
 まず、バグを仕込む装置を2つ。1つめは causal mask を「足し忘れた」モデルです。第3章のファイルは変更せず、`forward` だけを差し替えた子クラスを作ります。
 
 ```python
-# 第8巻 第5章 5.4: うまくいかない時の手引き — バグを仕込んで症状を観察する
-#
-# 訓練がうまくいかない時の3大典型(mask 漏れ / learning rate / ずらし忘れ)を、
-# 健常な訓練と同一条件(同じデータ・同じ初期値・同じ 1000 ステップ = 5.1 と同じ)で
-# 1つずつ実際に仕込み、どんな「症状」が出るかを観察する。
-# 各実験の最後の assert が「症状の再現」そのものになっている。
-import math
-import os
-import sys
-
-import numpy as np
-import torch
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-for _ch in ("ch02", "ch03"):
-    _p = os.path.normpath(os.path.join(_HERE, "..", _ch))
-    if _p not in sys.path:
-        sys.path.append(_p)   # 末尾に足す(ch03 にも train.py があり、先頭だと衝突する)
-
-from data import PAD, encode_pair, decode, make_batches, vocab_size   # 第2章
-from model import TinyTransformer, label_smoothing_loss, pad_mask     # 第3章
-from train import load_data, lrate, token_accuracy, pick_device       # 5.1
-from generate import greedy_decode                                    # 5.2
-
-
-# --- バグ1: causal mask の漏れ -----------------------------------------------
 class LeakyTransformer(TinyTransformer):
-    """第3章の forward から causal_mask を「足し忘れた」状態を再現する。
-
-    第3章のファイルは変更せず、forward だけ差し替える。tgt_mask が pad_mask
-    だけになっている——これが今回仕込むバグのすべて。
-    """
+    """第3章の forward から causal_mask を「足し忘れた」状態を再現する。"""
 
     def forward(self, src_ids, tgt_in_ids):
         src_mask = pad_mask(src_ids)
@@ -813,123 +381,21 @@ class LeakyTransformer(TinyTransformer):
         return y @ self.embed.weight.T
 ```
 
-2つめは、ずらし忘れと learning rate の異常を注入できる訓練ループです。5.1の `train_model` の縮約版で、`lr_mode` に定数を渡すとスケジュールを切り、`shift_bug=True` で添字を1文字ぶん書き間違えます。
+2つめは、ずらし忘れと learning rate の異常を注入できる訓練ループ `run` です。5.1の `train_model` の縮約版で、`lr_mode` に定数を渡すとスケジュールを切り、`shift_bug=True` で添字を1文字ぶん書き間違えます。
 
 ```python
-def run(name, model_cls=TinyTransformer, lr_mode="schedule", shift_bug=False,
-        epochs=125, batch_size=32, seed=42, device=None, log=True):
-    """健常版と同一条件の短い訓練。lr_mode は "schedule" か定数。
-
-    返り値: (model, [(step, エポック平均 loss), ...])
-    """
-    torch.manual_seed(seed)
-    rng = np.random.default_rng(seed)
-    device = device or pick_device()
-    train_pairs, _, _, _ = load_data()
-    model = model_cls(vocab_size, d_model=128, h=4, N=2,
-                      d_ff=256, p_drop=0.1, max_len=64).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=1.0, betas=(0.9, 0.98), eps=1e-9)
-
-    history, step = [], 0
-    for epoch in range(1, epochs + 1):
-        batches, _ = make_batches(train_pairs, batch_size, rng=rng)
-        model.train()
-        epoch_losses = []
-        for src, tgt in batches:
-            step += 1
-            lr = lrate(step) if lr_mode == "schedule" else lr_mode
-            for group in opt.param_groups:
-                group["lr"] = lr
-            src = torch.from_numpy(src).to(device)
-            tgt = torch.from_numpy(tgt).to(device)
+def run(name, model_cls=TinyTransformer, lr_mode="schedule", shift_bug=False, ...):
+    ...
+            lr = lrate(step) if lr_mode == "schedule" else lr_mode   # 定数で warmup を切る
+            ...
             tgt_in = tgt[:, :-1]
             if shift_bug:
                 tgt_out = tgt[:, :-1]            # バグ: [:, 1:] と書くべき所のずらし忘れ
             else:
                 tgt_out = tgt[:, 1:]             # 正しい1トークンずらし(3.1)
-            loss = label_smoothing_loss(model(src, tgt_in), tgt_out,
-                                        eps=0.1, pad_id=PAD)
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-            epoch_losses.append(loss.item())
-        if epoch == 1 or epoch % 25 == 0:
-            history.append((step, float(np.mean(epoch_losses))))
-    if log:
-        print("[%s]" % name)
-        print("  loss: " + "  ".join("step%d %.3f" % (s, l) for s, l in history))
-    return model, history
-
-
-def greedy_check(model, raw_pairs, device, n=30):
-    """コーパス全体から等間隔に n ペア選び、greedy 完全一致率を測る。"""
-    model.eval()
-    sample = raw_pairs[::max(1, len(raw_pairs) // n)][:n]
-    hit = 0
-    for s, t in sample:
-        src_ids, _ = encode_pair(s, t)
-        if decode(greedy_decode(model, src_ids, device)) == t:
-            hit += 1
-    return hit / len(sample)
 ```
 
-実行部は、健常な基準を1本走らせたあと、バグを1つずつ仕込みます。
-
-```python
-if __name__ == "__main__":
-    device = pick_device()
-    train_pairs, _, train_raw, _ = load_data()
-    demo = ("he eats fish", "かれ は さかな を たべます")
-
-    # --- 基準: 健常な訓練(5.1 と同じ 1000 ステップ) ---------------------------
-    model_ok, hist_ok = run("健常(基準)")
-    acc_tf = token_accuracy(model_ok, train_pairs, device)
-    acc_gen = greedy_check(model_ok, train_raw, device)
-    print("  teacher forcing 正解率 %.3f / greedy 完全一致 %.3f" % (acc_tf, acc_gen))
-    loss_ok = hist_ok[-1][1]
-    assert acc_tf > 0.95 and acc_gen > 0.75
-
-    # --- 症状A: loss は見事に下がるのに、生成すると壊滅 ------------------------
-    # 原因: decoder の causal mask 漏れ(訓練中だけ未来=正解が見えている)
-    print()
-    model_a, hist_a = run("バグ1: causal mask 漏れ", model_cls=LeakyTransformer)
-    acc_tf_a = token_accuracy(model_a, train_pairs, device)
-    acc_gen_a = greedy_check(model_a, train_raw, device)
-    src_ids, _ = encode_pair(*demo)
-    print("  teacher forcing 正解率 %.3f / greedy 完全一致 %.3f" % (acc_tf_a, acc_gen_a))
-    print("  例: %r -> %r" % (demo[0], decode(greedy_decode(model_a, src_ids, device))))
-    assert hist_a[-1][1] < loss_ok + 0.1      # loss は健常版と同等以下(悪くはならない)
-    assert acc_tf_a > 0.95                    # teacher forcing の正解率も満点近く「見える」
-    assert acc_gen_a < 0.3                    # しかし自力で生成させると壊滅
-
-    # --- 症状B: loss が発散する/高止まりする ---------------------------------
-    # 原因: learning rate が大きすぎる(warmup なしの定数 lr = 0.5)
-    print()
-    model_b, hist_b = run("バグ2a: lr 大きすぎ(定数 0.5)", lr_mode=0.5)
-    final_b = hist_b[-1][1]
-    assert math.isnan(final_b) or final_b > 3.0   # 当てずっぽう(ln 275 ≈ 5.6)前後で迷走
-
-    # --- 症状B': loss が(ほとんど)下がらない --------------------------------
-    # 原因: learning rate が小さすぎる(定数 1e-6)
-    model_c, hist_c = run("バグ2b: lr 小さすぎ(定数 1e-6)", lr_mode=1e-6)
-    # 1000 ステップ使い切っても、当てずっぽうの loss(ln 275 ≈ 5.6)にすら届かない
-    assert hist_c[-1][1] > math.log(vocab_size)
-
-    # --- 症状C: 同じ語を延々と繰り返す -----------------------------------------
-    # 原因: 1トークンずらしの忘れ(tgt_out に tgt_in と同じ列を渡している)
-    print()
-    model_d, hist_d = run("バグ3: ずらし忘れ", shift_bug=True)
-    out_ids = greedy_decode(model_d, src_ids, device)
-    out_toks = decode(out_ids)
-    print("  例: %r -> ids %s..." % (demo[0], out_ids[:8]))
-    print("     (decode すると %r — 特殊トークンは読み飛ばされる)" % out_toks)
-    assert hist_d[-1][1] < loss_ok                # loss だけ見れば絶好調(コピーは簡単)
-    assert len(set(out_ids)) <= 2                 # しかし生成は同じトークンの繰り返し
-
-    print("\nok: 3つのバグの症状(下がりすぎて壊滅 / 発散・停滞 / 繰り返し)を再現")
-```
-
-実行結果がこの節の本体です。1ブロックずつ診察します。
+実行部は健常な基準を1本走らせたあと、バグを1つずつ仕込みます。全文と動作確認は `code/ch05/failure_modes.py`(`python3` で通過。各実験の最後の assert が「症状の再現」そのものになっています)。実行結果がこの節の本体です。1ブロックずつ診察します。
 
 ```
 [健常(基準)]
@@ -955,9 +421,9 @@ if __name__ == "__main__":
 
 **症状A(mask 漏れ)が、いちばん怖い顔をしています。** loss の行を健常版と見比べてください——どこにも異常がありません。teacher forcing の正解率も 0.968。訓練中に監視できる指標はすべて「順調」と言っています。それなのに、いざ生成させると「が ほしい です」と文の残骸のようなものを返し、完全一致率は 0.000——1ペアも訳せません。からくりはこうです。causal mask がないと、decoder の self-attention は位置 $t$ の予測時に `tgt_in` の位置 $t+1$ 以降——`shift` の定義により、それは**いま当てるべき正解そのもの**——を読めてしまいます。訓練(teacher forcing)では正解列が入力に入っているのでカンニングし放題。しかし生成時の入力は自分の出力だけで、カンニングペーパーは存在しません。教訓を2つ。**訓練の指標がきれいすぎる時ほど疑うこと。そして、生成のテストを訓練の最後ではなく最初から回すこと。** 予防としては、第7巻5章で書いた causal mask の単体テスト、第1章1.3の「未来の入力を変えても出力が変わらない」結合テストが、まさにこのバグの検出器です。
 
-**症状B(lr 大きすぎ)は、いちばん分かりやすい顔です。** 1エポック目から loss が 29 と桁違いで、その後も 66、93、151 と**登って**いきます。発散です。歩幅が大きすぎて、谷を飛び越えて反対側の壁に当たることを繰り返しています。Adam でも歩幅の暴力は救えません。第4章4.6で「warmup を切ると訓練が壊れる」ことを実験済みですが、これはその極端版です。**症状B'(lr 小さすぎ)は地味な顔です。** 発散はせず、loss は確かに毎エポック下がっています——1000ステップかけて 8.1 から 6.2 へ。当てずっぽうの 5.6 にすら届いていません。この歩幅で床(約0.9)に着くには、何十倍ものステップが要るでしょう。「下がってはいるが、いつまでも終わらない」。処方はどちらも同じで、まずスケジュール(warmup)が入っているか確認し、次に learning rate を桁で(10倍・10分の1)振って挙動を見ることです。
+**症状B(lr 大きすぎ)は、いちばん分かりやすい顔です。** 1エポック目から loss が 29 と桁違いで、その後も 66、93、151 と**登って**いきます。発散です。歩幅が大きすぎて、谷を飛び越えて反対側の壁に当たることを繰り返しています。Adam でも歩幅の暴力は救えません。第4章4.6で「warmup を切ると訓練が壊れる」ことを実験済みですが、これはその極端版です。**症状B'(lr 小さすぎ)は地味な顔です。** 発散はせず、loss は確かに毎エポック下がっています——1000ステップかけて 8.1 から 6.2 へ。当てずっぽうの 5.6 にすら届いていません。この歩幅で床(約0.9)に着くには何十倍ものステップが要るでしょう。「下がってはいるが、いつまでも終わらない」。処方はどちらも同じで、まずスケジュール(warmup)が入っているか確認し、次に learning rate を桁で(10倍・10分の1)振って挙動を見ることです。
 
-**症状C(ずらし忘れ)の見分けポイントは、loss の最初の値です。** step 8 で早くも 0.997——健常版が125エポックかけて到達する床の値に、1エポック目で着いています。**最初から良すぎる loss は、難しい問題が簡単な問題にすり替わっているサイン**です。`tgt_out` に `tgt_in` と同じ列を渡すと、課題は「次のトークンを予測せよ」ではなく「いま読んだトークンをそのまま書き写せ」になります。コピーは causal mask があっても解ける自明な課題なので、loss は一瞬で床に着きます。そして生成すると、`<bos>` を見せられたモデルは学んだとおり `<bos>` を書き写し、それを見てまた `<bos>` を……と、ID 1 が `max_len` まで並びます。`decode` が特殊トークンを読み飛ばすので、画面上は空文字列という間抜けな結末です。翻訳機を訓練していたつもりが、オウムを訓練していました。実物のバグでは「同じ語(実トークン)の繰り返し」として現れることも多く、5.2で見た訓練途中モデルの「こんこんこん……」(確信が持てない局所ループ)とは、**loss が最初から不自然に低かったか**で見分けられます。あちらは訓練を続ければ消えますが、こちらは何エポック回しても直りません。
+**症状C(ずらし忘れ)の見分けポイントは、loss の最初の値です。** step 8 で早くも 0.997——健常版が125エポックかけて到達する床の値に、1エポック目で着いています。**最初から良すぎる loss は、難しい問題が簡単な問題にすり替わっているサイン**です。`tgt_out` に `tgt_in` と同じ列を渡すと、課題は「次のトークンを予測せよ」ではなく「いま読んだトークンをそのまま書き写せ」になります。コピーは causal mask があっても解ける自明な課題なので、loss は一瞬で床に着きます。そして生成すると、`<bos>` を見せられたモデルは学んだとおり `<bos>` を書き写し、それを見てまた `<bos>` を……と、ID 1 が `max_len` まで並びます。`decode` が特殊トークンを読み飛ばすので画面上は空文字列という間抜けな結末です。翻訳機を訓練していたつもりが、オウムを訓練していました。実物のバグでは「同じ語(実トークン)の繰り返し」として現れることも多く、5.2で見た訓練途中モデルの「こんこんこん……」(確信が持てない局所ループ)とは**loss が最初から不自然に低かったか**で見分けられます。あちらは訓練を続ければ消えますが、こちらは何エポック回しても直りません。
 
 最後に、症状から引ける診察表にまとめておきます。
 
