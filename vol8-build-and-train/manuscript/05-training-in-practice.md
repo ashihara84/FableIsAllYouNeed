@@ -1,5 +1,6 @@
 # 第5章 訓練の実際 — 小さく回して観察する
 
+> [目次](../TOC.md) ・ [← 前の章](04-adam-warmup.md) ・ [次の章 →](06-evaluation.md)
 
 部品は、すべて揃いました。第1章で第7巻の部品を Transformer に組み上げて PyTorch に卒業し、第2章で対訳コーパスを BPE で ID 列にしてバッチに詰め、第3章で forward → loss → backward → update の4拍子に label smoothing を組み込み、第4章で最後の道具 Adam と warmup を中身まで開けて手に入れました。
 
@@ -478,3 +479,7 @@ def run(name, model_cls=TinyTransformer, lr_mode="schedule", shift_bug=False, ..
 ---
 
 本章のコードは `code/ch05/` に4本あります。`train.py`(5.1: 訓練と loss の数表)、`generate.py`(5.2: 生成3方式)、`attention_map.py`(5.3: cross-attention の数値表)、`failure_modes.py`(5.4: バグ3種の再現)。いずれも `python3 ファイル名.py` で実行でき、本文の主張(loss が 1/5 以下に下がる・訓練ペアの大半を翻訳できる・温度とビームが仕様どおり振る舞う・3つのバグが本文の症状を再現する)が assert で検算されます。`train.py` 以外はチェックポイント `ch05_checkpoint.pt` を自動で読み込み(なければその場で訓練し)ます。第2章 `data.py`・第3章 `model.py` を import して使っており、それらのファイルには手を入れていません。
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](04-adam-warmup.md) ・ [次の章 →](06-evaluation.md)

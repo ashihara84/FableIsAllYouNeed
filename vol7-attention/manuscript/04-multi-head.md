@@ -1,5 +1,7 @@
 # 第4章 3.2.2 Multi-Head Attention — 視点を増やす
 
+> [目次](../TOC.md) ・ [← 前の章](03-scaled-dot-product.md) ・ [次の章 →](05-three-attentions.md)
+
 前章で論文の式(1)が完成しました。`attention(Q, K, V, mask)` は単体テストを通過し、手計算の小例とも一致しています。ところが論文の図2は2枚組です。左が前章で作った Scaled Dot-Product Attention、右が **Multi-Head Attention** で、キャプションにはこうあります。
 
 > *"(right) Multi-Head Attention consists of several attention layers running in parallel."*
@@ -310,3 +312,7 @@ for i in range(h):
 **問4** (a) 射影 $3 \times 10 \times 512^2 = 7{,}864{,}320$、スコア $10 \times 10 \times 512 = 51{,}200$、重み付き和 $51{,}200$。計 $7{,}966{,}720$ 回。(b) 射影は同じ $7{,}864{,}320$、スコアと重み付き和も同じ計 $102{,}400$、$W^O$ が $10 \times 512^2 = 2{,}621{,}440$。計 $10{,}588{,}160$ 回。比は約 $1.33$——増分はちょうど射影3本に対する $W^O$ 1本分です。$n = m = 1000$ では、射影系は系列長に比例して千倍になる一方、スコア系は $n m$ で1万倍に効いて支配項が入れ替わり($1000 \times 1000 \times 512 \approx 5.1$ 億 × 2)、比は約 $1.14$ に縮みます。系列が長いほど $W^O$ の上乗せは霞み、"similar" はさらに正確になります(そしてこの $n^2$ の伸びこそ、第8章で読む Table 1 の主役です)。
 
 </details>
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](03-scaled-dot-product.md) ・ [次の章 →](05-three-attentions.md)

@@ -1,5 +1,7 @@
 # 第5章 連鎖律 — 合成関数を機械的に微分する
 
+> [目次](../TOC.md) ・ [← 前の章](04-partial-and-gradient.md) ・ [次の章 →](06-fitting-parameters.md)
+
 前の章で、変数が複数あっても勾配 $\nabla f$ を作り、その逆向きに一歩ずつ谷底へ降りられるようになりました。では、その勾配は誰が計算したのか。私たちです。第3章でも第4章でも、$f'(x)$ や $\partial f / \partial x$ は毎回、紙の上で導出してコードに書き写していました。
 
 $f(x, y) = x^2 + y^2$ のような素直な形ならそれで困りません。しかし第1巻の終章で見たとおり、ニューラルネットワークの計算は `X @ W + b` のような部品を**何段も積み重ねた**もの——前の段の出力が次の段の入力になる、関数の中に関数が入った入れ子です。たとえば
@@ -236,3 +238,7 @@ def backward_diamond(x, y):
 ---
 
 本章のコード(5.4節の2つの例)は `code/ch05/computational_graph.py` にまとめてあり、`python3 computational_graph.py` で assert により検算できます。
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](04-partial-and-gradient.md) ・ [次の章 →](06-fitting-parameters.md)

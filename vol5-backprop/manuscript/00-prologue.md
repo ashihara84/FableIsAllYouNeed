@@ -1,5 +1,7 @@
 # 序章 ラスボスとの対面
 
+> [目次](../TOC.md) ・ [← 前の章](../../vol4-probability/manuscript/08-boss-rematch.md) ・ [次の章 →](01-activations.md)
+
 ## 0.1 ここまでの到達点 — 式(1)は読めた。だが図1には、まだ箱がある
 
 第5巻です。第4巻の終章で、このシリーズ初の出来事が起きました。論文の式(1)——
@@ -90,3 +92,7 @@ Section 3.1 と 5.4 の文章は、もっと率直に読めません。residual 
 この巻を終えると、図1のアーキテクチャ図は「読める箱」が多数派になります。残るは Multi-Head Attention、Positional Encoding、Embedding——いずれも第6巻以降の獲物です。
 
 それでは始めましょう。最初の問いはこれです——第1巻からずっと頼ってきた `X @ W + b` に、実は**どうしてもできないこと**があります。それは何でしょうか。第1章では、まずその限界に正面からぶつかります。
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](../../vol4-probability/manuscript/08-boss-rematch.md) ・ [次の章 →](01-activations.md)

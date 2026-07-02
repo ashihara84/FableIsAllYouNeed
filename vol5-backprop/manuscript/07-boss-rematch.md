@@ -1,5 +1,7 @@
 # 終章 ラスボス再戦 — アーキテクチャ図の箱が読める
 
+> [目次](../TOC.md) ・ [← 前の章](06-deep-toolbox.md) ・ [次の章 →](../../vol6-language/manuscript/00-prologue.md)
+
 第6章までで、この巻の部品はすべて揃いました。活性化関数と ReLU(第1章)、MLP(第2章)、誤差逆伝播(第3章)、自作の autograd(第4章)、autograd による学習(第5章)、そして residual connection・layer norm・dropout(第6章)。
 
 序章で、私たちはひとつの約束をしました。この巻を終えたとき、**論文のアーキテクチャ図(図1)の、attention 以外の箱が全部読める**ようになっている、という約束です。いまから、それを確かめます。
@@ -98,3 +100,7 @@ $$ \mathrm{LayerNorm}\big(x + \mathrm{Dropout}(\mathrm{Sublayer}(x))\big) $$
 第6巻「言語をベクトルにする — Transformer までの NLP」で、この問いに答えます。単語を数値にする方法(トークン化と埋め込み)、「言語モデル」という問題設定、そして attention 以前の手法たち——RNN や seq2seq——が何に苦しんでいたのかを、実装で体感します。そこまで行って初めて、この論文のタイトル "Attention Is All You Need"——**attention だけ**でいい——が、何に対する宣言なのかが刺さるようになります。
 
 箱の前に、箱に流す中身です。言語を数値にしに行きましょう。
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](06-deep-toolbox.md) ・ [次の章 →](../../vol6-language/manuscript/00-prologue.md)

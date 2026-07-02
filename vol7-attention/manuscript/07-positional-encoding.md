@@ -1,5 +1,7 @@
 # 第7章 3.5 Positional Encoding — 語順を取り戻す
 
+> [目次](../TOC.md) ・ [← 前の章](06-ffn-embeddings.md) ・ [次の章 →](08-why-self-attention.md)
+
 巻頭の論文読解マップで Section 3 に残った「未」は、3.5 Positional Encoding ただ1つです。ただしこれは消化試合ではありません。第6巻終章に、私たちはこの問いを残してきました。
 
 **RNN を本当に取り除いたら、語順の情報はどうなるのか?**
@@ -266,3 +268,7 @@ learned positional embedding(学習型位置埋め込み)とは、`(max_len, d_m
 | "$PE_{pos+k}$ can be represented as a linear function of $PE_{pos}$" | 同 `offset_matrix()` とテスト4 |
 | "extrapolate to sequence lengths longer than those encountered during training" | 同 テスト3(位置10000でも値域 $[-1,1]$)+ 演習3 |
 | (テスト5・演習2)内積が位置差だけで決まる | 同 テスト5 |
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](06-ffn-embeddings.md) ・ [次の章 →](08-why-self-attention.md)

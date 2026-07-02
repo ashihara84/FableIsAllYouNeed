@@ -16,14 +16,14 @@
 
 | 巻 | タイトル | この巻で読めるようになる論文の箇所 |
 |---|---|---|
-| 1 | 線形代数 — すべては行列演算である | 式(1) の行列構造 `QK^T`、射影 `W^Q/W^K/W^V` |
-| 2 | 微分と最適化 — 学習とは坂を下ること | 5.3 の learning rate / warmup の意図 |
-| 3 | 機械学習入門 — 「学習する」とは何か | Section 5 の training / batching という営み |
-| 4 | 確率と情報量 — 分類の損失関数を求めて | softmax・√d_k → **式(1) が完全に読める** |
-| 5 | ニューラルネットと誤差逆伝播 — 自動微分を自作する | 式(2) FFN、Add & Norm、Dropout |
-| 6 | 言語をベクトルにする — Transformer までの NLP | Introduction・Background 全文、BPE、埋め込み |
-| 7 | Attention Is All You Need 精読 | Section 3・4 の全文 + 全部品の実装 |
-| 8 | 全部組み立てて訓練する | Section 5・6・7 → 論文全文通読(卒業) |
+| 1 | [線形代数 — すべては行列演算である](vol1-linear-algebra/TOC.md) | 式(1) の行列構造 `QK^T`、射影 `W^Q/W^K/W^V` |
+| 2 | [微分と最適化 — 学習とは坂を下ること](vol2-calculus/TOC.md) | 5.3 の learning rate / warmup の意図 |
+| 3 | [機械学習入門 — 「学習する」とは何か](vol3-ml-basics/TOC.md) | Section 5 の training / batching という営み |
+| 4 | [確率と情報量 — 分類の損失関数を求めて](vol4-probability/TOC.md) | softmax・√d_k → **式(1) が完全に読める** |
+| 5 | [ニューラルネットと誤差逆伝播 — 自動微分を自作する](vol5-backprop/TOC.md) | 式(2) FFN、Add & Norm、Dropout |
+| 6 | [言語をベクトルにする — Transformer までの NLP](vol6-language/TOC.md) | Introduction・Background 全文、BPE、埋め込み |
+| 7 | [Attention Is All You Need 精読](vol7-attention/TOC.md) | Section 3・4 の全文 + 全部品の実装 |
+| 8 | [全部組み立てて訓練する](vol8-build-and-train/TOC.md) | Section 5・6・7 → 論文全文通読(卒業) |
 
 各巻は「数学・数学・息継ぎ・数学・実装・実装・精読・実装」という難易度カーブで構成されています。
 

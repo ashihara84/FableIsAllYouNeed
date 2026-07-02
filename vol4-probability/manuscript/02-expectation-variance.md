@@ -1,5 +1,7 @@
 # 第2章 期待値と分散 — 分布を2つの数で要約する
 
+> [目次](../TOC.md) ・ [← 前の章](01-probability.md) ・ [次の章 →](03-likelihood.md)
+
 前の章で、私たちは不確かさを数にする言葉——確率変数と分布——を手に入れ、「明日の天気は」に続く単語のような「まだ決まっていないもの」を、とり得る値と確率の表として書けるようになりました。ところが論文は、分布を表では語りません。序章で掲げた脚注をもう一度見てください。
 
 > *"To illustrate why the dot products get large, assume that the components of q and k are independent random variables with mean 0 and variance 1. Then their dot product, $q \cdot k = \sum_{i=1}^{d_k} q_i k_i$, has mean 0 and variance $d_k$."*
@@ -248,3 +250,7 @@ print("ok: 手計算とシミュレーションが一致しました")
 (a) $0$(期待値はいつでも足せる)。(b) 独立なので $1 \times 100 = 100$。(c) $\sqrt{100} = 10$。(d) $\sqrt{100} = 10$ で割れば $\mathrm{Var}(S/10) = 100/100 = 1$。シミュレーションでも、分散がほぼ 100、$S/10$ の分散がほぼ 1 になることが確認できます。これが第7章で $d_k$ 次元の内積に対して行うことの予行演習です。
 
 </details>
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](01-probability.md) ・ [次の章 →](03-likelihood.md)

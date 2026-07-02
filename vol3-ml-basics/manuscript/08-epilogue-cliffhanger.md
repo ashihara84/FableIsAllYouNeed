@@ -1,5 +1,7 @@
 # エピローグ 突然の宿題 — 分類できない
 
+> [目次](../TOC.md) ・ [← 前の章](07-boss-rematch.md) ・ [次の章 →](../../vol4-probability/manuscript/00-prologue.md)
+
 終章で、私たちはラスボスに勝ちました。"training" が読めるようになり、「モデル = パラメータ付き関数、学習 = 損失最小化」という世界観も手に入りました。この巻の仕事は、終わったはずです。
 
 ——本を閉じかけたあなたを、引き止めます。
@@ -197,3 +199,7 @@ grad_w2, grad_b2 = numerical_grad(linear_mse_loss, x_one, y_one, w_wrong, b_wron
 **第4巻『確率と情報量 — 分類の損失関数を求めて』**
 
 第3巻は、ここで終わります。宿題は、机の上に置いたままで。
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](07-boss-rematch.md) ・ [次の章 →](../../vol4-probability/manuscript/00-prologue.md)

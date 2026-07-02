@@ -1,5 +1,7 @@
 # 第6章 3.3 FFN・3.4 Embeddings and Softmax
 
+> [目次](../TOC.md) ・ [← 前の章](05-three-attentions.md) ・ [次の章 →](07-positional-encoding.md)
+
 図1の本体で残る箱は1つ、各ブロックの2つ目の sub-layer "Feed Forward" です。本体の外には、入口の "Input/Output Embedding" と出口の "Linear + Softmax" が残っています。
 
 この章で読む Section 3.3 と 3.4 に、初めて見るものはほとんどありません。式(2)は第5巻終章で読了済み、埋め込みは第6巻3章、出力側の softmax は第4巻6章でやりました。未読は2か所だけ——3.3 の見出しの "Position-wise" という1語、そして 3.4 後半の**重みの共有(weight sharing)**と **$\sqrt{d_{model}}$ 倍の補正**です。論文は短く、ほとんど説明しません。この章はその行間を、これまでの巻の道具で埋めます。
@@ -231,3 +233,7 @@ $W$ は $(100 \times 512)^2 = 51200^2 \approx 26$**億**個。base model 全体(
 | 3.4 | "share the same weight matrix"(weight sharing) | `output_logits(X, emb.E)` に同じ `E` を渡す。`test_ffn_embedding.py` で勾配の2役合算を検証 |
 | 3.4 | "multiply those weights by √d_model" | `embedding.py` — `scale = np.sqrt(self.d_model)` の行 |
 | Table 3 | base model = $65 \times 10^6$ params | `ex_param_count.py`(概算 63M で突き合わせ) |
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](05-three-attentions.md) ・ [次の章 →](07-positional-encoding.md)

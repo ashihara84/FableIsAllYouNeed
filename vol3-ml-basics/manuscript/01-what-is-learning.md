@@ -1,5 +1,7 @@
 # 第1章 「学習する」とは何か
 
+> [目次](../TOC.md) ・ [← 前の章](00-prologue.md) ・ [次の章 →](02-linear-regression.md)
+
 序章で、この巻のラスボスを掲げました。
 
 > *"This section describes the training regime for our models."*
@@ -239,3 +241,7 @@ $$D = \{(x_1,\ y_1),\ (x_2,\ y_2),\ \dots,\ (x_n,\ y_n)\}$$
 $\mathbf{w}$ が512個、$b$ が1個で、計**513個**。$65{,}000{,}000 \div 513 \approx 127{,}000$ なので約**13万倍**。ちなみに 512 という次元は論文の $d_{model}$ と同じ値(第1巻第1章)。入力の次元が同じでも、$f$ の形を深くしていくとパラメータ数はここまで膨らむ——その膨らませ方が第5巻以降の主題になる。
 
 </details>
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](00-prologue.md) ・ [次の章 →](02-linear-regression.md)

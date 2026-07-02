@@ -1,5 +1,7 @@
 # 第2章 3.1 Encoder and Decoder Stacks — 全体の見取り図
 
+> [目次](../TOC.md) ・ [← 前の章](01-intro-background.md) ・ [次の章 →](03-scaled-dot-product.md)
+
 ここからは Section 3 Model Architecture——「設計図」に入ります。進み方は序章 0.2 のとおり、「原文 → 逐行読解 → 単体実装 → テスト → 対応表」です。この章が受け持つ Section 3.1 に式は1本もありません。代わりにこの章は巻全体の**地図**になります。第3章以降で作る部品——attention、FFN、埋め込み——が建物のどこに取り付けられるのか、部品より先に骨組みを押さえます。
 
 ## 2.1 図1を地図として読む: encoder 側・decoder 側、N=6 の積み重ね
@@ -193,3 +195,7 @@ $ python3 stack_skeleton.py
 (a) encoder $2 \times 6 = 12$、decoder $3 \times 6 = 18$、計 **30個**(検証6の数字)。(b) 1箱あたり gamma `(512,)` + beta `(512,)` で 1024 個、全体で $30 \times 1024 = $ **30,720個**。第6章の演習で論文の 65M とパラメータ数を突き合わせるとき、layer norm の取り分がごく小さいことが見えてきます。
 
 </details>
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](01-intro-background.md) ・ [次の章 →](03-scaled-dot-product.md)

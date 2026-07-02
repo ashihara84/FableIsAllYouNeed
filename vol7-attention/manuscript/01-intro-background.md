@@ -1,5 +1,7 @@
 # 第1章 Abstract・Introduction・Background を読む
 
+> [目次](../TOC.md) ・ [← 前の章](00-prologue.md) ・ [次の章 →](02-stacks.md)
+
 1〜6巻で揃えた道具はすべて手元にあり、論文読解マップで「まだ」が残るのは Section 3.2 の組み立てと Section 3.5 だけです。いよいよ論文の1ページ目を開きます。
 
 ただしこの章には実装がありません。序章0.2で決めた精読の作法「原文 → 逐行読解 → 単体実装 → テスト → 対応表」のうち、Abstract・Introduction・Background には実装すべき部品がまだ登場しないからです。作法がフル稼働するのは第2章からです。
@@ -202,3 +204,7 @@ Extended Neural GPU、ByteNet、ConvS2S。いずれも RNN の逐次性を畳み
 (1) 語順の喪失。RNN は1トークンずつ読む仕組みそのものが語順を担っていましたが、attention は全位置を一度に見るため、このままでは単語を並べ替えても結果が変わりません。答えは第7章の Positional Encoding(Section 3.5)。(2) 自分自身への attention とは何か。第6巻7章の attention は encoder と decoder という2つの系列の橋でしたが、RNN を捨てた後、系列の表現そのものを作る仕事も attention が引き受ける必要があります。これが Background で定義された self-attention("relating different positions of a single sequence")で、答えは第5章(Q=K=V=自分自身)。
 
 </details>
+
+---
+
+> [目次](../TOC.md) ・ [← 前の章](00-prologue.md) ・ [次の章 →](02-stacks.md)
