@@ -4,7 +4,7 @@
 
 第6章までで、この巻の仕事はすべて終わりました。第7巻の部品を1つの Transformer に組み上げ、自作スタックの限界を実測して PyTorch に乗り換え、データを整え、訓練ループを書き、Adam と warmup で学習させ、生成し、BLEU で測りました。第3巻第4章で初めて回した forward → loss → backward → update の4拍子は、最後まで同じ4拍子のままでした。
 
-残った仕事は、1つだけです。**読むこと。**
+残った仕事は、1つだけです。**読むことです。**
 
 序章で掲げたこの巻のラスボスを、一言一句変えずに再掲します。
 
@@ -17,7 +17,7 @@
 > *"On the WMT 2014 English-to-German translation task, the big transformer model (Transformer (big) in Table 2) outperforms the best previously reported models (including ensembles) by more than 2.0 BLEU, establishing a new state-of-the-art BLEU score of 28.4."*
 > — 同論文, Section 6.1
 
-序章でこの3つを見たとき、読めなかったのは単語ではありませんでした。「8基の P100 で訓練した」がどれほどの規模か。「β1 = 0.9, β2 = 0.98」がどのつまみで、なぜ2つ目だけ 0.999 でなく 0.98 なのか。「BLEU 28.4 で新記録」の 2.0 の差がどれほどの事件なのか。**数字は読めても、重みが読めない。** それがこの巻の入口でした。
+序章でこの3つを見たとき、読めなかったのは単語ではありませんでした。「8基の P100 で訓練した」がどれほどの規模でしょうか。「β1 = 0.9, β2 = 0.98」がどのつまみで、なぜ2つ目だけ 0.999 でなく 0.98 なのでしょうか。「BLEU 28.4 で新記録」の 2.0 の差がどれほどの事件なのでしょうか。**数字は読めても、重みが読めません。** それがこの巻の入口でした。
 
 いまは違います。1つ目は、第1章で1ステップを実測し「訓練が物理的に終わらない」と見積もり、第6章で Table 2 の FLOPs から「うちは論文の何分の一か」まで計算した私たちにとって、訓練コストの申告として読めます。2つ目は、第4章で Adam を実装し β2 = 0.999 と 0.98 を比較した私たちにとって、処方箋として読めます。3つ目は、第6章で BLEU が n-gram の一致率だと知り自作モデルの BLEU を測った私たちにとって、「ensembles を単体モデルが上回った」凄みまで含めて読めます。
 
@@ -29,17 +29,17 @@
 
 ## 7.1 通読 — Abstract から Conclusion まで、止まらずに
 
-論文を印刷するか、画面に開いてください。15ページ。これから Abstract から Section 7 Conclusion まで、頭から順に通り抜けます。各巻の終章での「再戦」は、いつも論文の一部分が相手でした。今日はその総決算——相手は全文です。
+論文を印刷するか、画面に開いてください。15ページです。これから Abstract から Section 7 Conclusion まで、頭から順に通り抜けます。各巻の終章での「再戦」は、いつも論文の一部分が相手でした。今日はその総決算——相手は全文です。
 
-確認することは、第7巻の終章と同じく1つだけです。**どこで立ち止まるか。** 立ち止まらなければ、卒業です。
+確認することは、第7巻の終章と同じく1つだけです。**どこで立ち止まるかです。** 立ち止まらなければ、卒業です。
 
-**Abstract。** "dispensing with recurrence and convolutions entirely"——再帰と畳み込みを完全に捨てる宣言。捨てられた側を知らないと、この過激さは読めません。第6巻で RNN を実装し、並列化できない痛み・長距離依存に弱い痛みを実測した私たちは、これが強がりではなく設計判断だと知っています。"superior in quality while being more parallelizable and requiring significantly less time to train" の3点セットの根拠も、いまや全部この下のセクションに紐づけて言えます(第7巻第1章で逐行読解済み)。
+**Abstract。** "dispensing with recurrence and convolutions entirely"——再帰と畳み込みを完全に捨てる宣言です。捨てられた側を知らないと、この過激さは読めません。第6巻で RNN を実装し、並列化できない痛み・長距離依存に弱い痛みを実測した私たちは、これが強がりではなく設計判断だと知っています。"superior in quality while being more parallelizable and requiring significantly less time to train" の3点セットの根拠も、いまや全部この下のセクションに紐づけて言えます(第7巻第1章で逐行読解済み)。
 
-**1 Introduction。** "This inherently sequential nature precludes parallelization within training examples"——逐次性が並列化を妨げる。第6巻第5章で、RNN の hidden state が前の時刻の計算を待つしかないことをコードの構造として見ました。「うちの RNN もそうでした」と相槌が打てる段落です(第7巻第1章)。
+**1 Introduction。** "This inherently sequential nature precludes parallelization within training examples"——逐次性が並列化を妨げます。第6巻第5章で、RNN の hidden state が前の時刻の計算を待つしかないことをコードの構造として見ました。「うちの RNN もそうでした」と相槌が打てる段落です(第7巻第1章)。
 
-**2 Background。** 畳み込みで逐次性を消そうとした先行研究では、離れた位置同士を結ぶのに距離に応じた段数が要る——という整理。第6巻第7章で attention が「どの位置へも1ホップ」だと見た私たちには、Transformer の家系図として読めます(第7巻第1章)。
+**2 Background。** 畳み込みで逐次性を消そうとした先行研究では、離れた位置同士を結ぶのに距離に応じた段数が要る——という整理です。第6巻第7章で attention が「どの位置へも1ホップ」だと見た私たちには、Transformer の家系図として読めます(第7巻第1章)。
 
-**3 Model Architecture。** 私たちが第7巻を丸ごと使って精読し、全部品を単体実装した本丸です。3.1 の stack と $\mathrm{LayerNorm}(x + \mathrm{Sublayer}(x))$(第5巻第6章の配管)、3.2 の attention、3.3 の FFN(第5巻の MLP に "position-wise" を足したもの)、3.4 の embedding と出口の softmax(第6巻第3章と第4巻第6章)、3.5 の positional encoding(第7巻第7章)。
+**3 Model Architecture。** 私たちが第7巻を丸ごと使って精読し、全部品を単体実装した本丸です。3.1 の stack と $\mathrm{LayerNorm}(x + \mathrm{Sublayer}(x))$(第5巻第6章の配管)、3.2 の attention、3.3 の FFN(第5巻の MLP に "position-wise" を足したもの)、3.4 の embedding と出口の softmax(第6巻第3章と第4巻第6章)、3.5 の positional encoding(第7巻第7章)です。
 
 そして 3.2.1 に、あの式があります。
 
@@ -49,11 +49,11 @@ $$\mathrm{Attention}(Q, K, V) = \mathrm{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\
 
 7回目の今日、初めて、**立ち止まりません。** 速さを変えずに式(1)の前を通り過ぎます。素通りできることが、こんなに感慨深いとは思いませんでした。
 
-**4 Why Self-Attention / Table 1。** 層あたりの計算量・逐次操作数・最大経路長の3列の表。第7巻第8章で全行を自分で検算しました。第6巻で体感した「3つの痛み」が、そのまま表の3列になっていることも知っています。
+**4 Why Self-Attention / Table 1。** 層あたりの計算量・逐次操作数・最大経路長の3列の表です。第7巻第8章で全行を自分で検算しました。第6巻で体感した「3つの痛み」が、そのまま表の3列になっていることも知っています。
 
 **5 Training。** この巻の前半そのものです。5.1 のデータと "batched together by approximate sequence length" は第2章で実装し(BPE は第6巻第2章)、5.2 のハードウェアと訓練日数は第1章の実測と第6章のコスト見積もりで重みがわかり、5.3 の Adam と warmup の式は第4章で実装して「warmup を切ると壊れる」ことまで実験し、5.4 の dropout は第5巻 6.4、label smoothing は第3章で実装しました。"This hurts perplexity, as the model learns to be more unsure" の一文を、第3章の演習で自分のモデルの出力分布で確かめた人は、ここでにやりとできるはずです。
 
-**6 Results。** Table 2 の BLEU と training cost は第6章で読み方を揃えました。"beam search with a beam size of 4" は第5章で実装済み。Table 3 のアブレーションは、各行が1〜7巻のどの議論に対応するかの地図を第6章で作りました——head 数(第7巻第4章)、$d_k$(第4巻第7章)、dropout(第5巻)、学習版 PE(第7巻第7章)。あなたが第5章の演習でやった自分のアブレーションの、本家版です。6.3 の構文解析への一般化は概観で読みます——ここは深追いしないと第6章で決めました。立ち止まらないことと、すべてを掘ることは別だからです。
+**6 Results。** Table 2 の BLEU と training cost は第6章で読み方を揃えました。"beam search with a beam size of 4" は第5章で実装済みです。Table 3 のアブレーションは、各行が1〜7巻のどの議論に対応するかの地図を第6章で作りました——head 数(第7巻第4章)、$d_k$(第4巻第7章)、dropout(第5巻)、学習版 PE(第7巻第7章)。あなたが第5章の演習でやった自分のアブレーションの、本家版です。6.3 の構文解析への一般化は概観で読みます——ここは深追いしないと第6章で決めました。立ち止まらないことと、すべてを掘ることは別だからです。
 
 **7 Conclusion。** "In this work, we presented the Transformer, the first sequence transduction model based entirely on attention"——本研究では、attention のみに基づく初の系列変換モデル Transformer を提案した。論文自身による要約です。通読の最後にこれを読むと、要約が要約として正しく機能しているとわかります。つまり、**全文を読んだ人にしか、この段落の正確さはわかりません。** あなたには、わかります。
 
@@ -122,7 +122,7 @@ Y = X @ W + b
 
 教訓を一般化して述べるのは、寓話の作法に反します。ウサギとカメの最後に「さて、この話の教訓は」と講釈を始めたら台無しです。だから、ここでは言いません。代わりに、最後の演習をひとつだけ出します。略解は付けません。
 
-**演習(最終問題)** この8巻の寓話の教訓を、1行で書いてください。ただし「Transformer」「attention」という単語を使わないこと。——その1行は、次にあなたが「読めない論文」「歯が立たない教科書」「巨大すぎるコードベース」に出会ったとき、表紙の裏に書いてあるべき1行です。
+**演習(最終問題)** この8巻の寓話の教訓を、1行で書いてください。ただし「Transformer」「attention」という単語を使わないでください。——その1行は、次にあなたが「読めない論文」「歯が立たない教科書」「巨大すぎるコードベース」に出会ったとき、表紙の裏に書いてあるべき1行です。
 
 あなたの1行が書けたなら、このシリーズの目的は果たされました。論文が読めるようになったことは、実は2番目の収穫です。1番目は、**読めないものを前にしたときの手順**が、あなたの中に残ったことです。
 
@@ -132,7 +132,7 @@ Y = X @ W + b
 
 実は、この論文には続きがあります。論文を書いた7人ではなく、論文を読んだ世界中の人たちが書いた続きです。ある人たちは encoder だけを持っていき、ある人たちは decoder だけを持っていきました。前者は BERT と呼ばれ、後者は GPT と呼ばれ——その先に、あなたが今日どこかで会話した AI がいます。
 
-最終章で、その後の世界を眺めに行きましょう。式典はここまで。ここから先は、進路の話です。
+最終章で、その後の世界を眺めに行きましょう。式典はここまでです。ここから先は、進路の話です。
 
 ---
 
