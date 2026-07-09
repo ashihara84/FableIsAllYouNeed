@@ -84,6 +84,10 @@ $$\mathbf{a} \cdot \mathbf{b} = \|\mathbf{a}\| \, \|\mathbf{b}\| \cos\theta$$
 
 が成り立ちます。「掛けて足す」というそろばん勘定と、「長さと角度」という幾何が、同じ値を指すのです。証明はしませんが(この本の流儀です)、2次元で検算しておきましょう。$\mathbf{a} = (1, 1)$、$\mathbf{b} = (2, 0)$ なら、定義どおりでは $\mathbf{a} \cdot \mathbf{b} = 1 \times 2 + 1 \times 0 = 2$ です。一方 $\theta = 45°$、長さは $\sqrt{2}$ と $2$ なので、幾何の側は $\sqrt{2} \times 2 \times \cos 45° = 2$ です。一致しました。
 
+![図2.1](../figures/ch02-dot-product-angle.png)
+
+図2.1: 内積の2つの顔。$\mathbf{a} = (1,\ 1)$ と $\mathbf{b} = (2,\ 0)$ のなす角は $45°$。「対応する成分を掛けて足す」定義でも、「長さ × 長さ × $\cos\theta$」の幾何でも、同じ値 $2$ になる。
+
 この公式は内積を**両者の長さ × 向きの一致度($\cos\theta$)**に分解します。$\cos\theta$ の挙動は:
 
 - 向きが完全に一致($\theta = 0°$)なら $\cos\theta = 1$

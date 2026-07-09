@@ -121,6 +121,10 @@ $$\log L(\theta) = 7 \log \theta + 3 \log(1-\theta)$$
 assert np.argmax(np.log(L)) == np.argmax(L)  # 対数を取っても頂上の場所は同じ
 ```
 
+![図3.1](../figures/ch03-likelihood-peak.png)
+
+図3.1: 尤度 $L(\theta) = \theta^7(1-\theta)^3$(左)と対数尤度 $\ell(\theta) = \log L(\theta)$(右)。左の点は 3.2 の表の4つの値です。対数を取ると標高の目盛りは変わりますが、山の頂上はどちらも $\theta = 0.7$ から動きません。
+
 困りごと1も消えます。さっき 0.0 に消えた1000個の積を、対数の世界でやり直すと——
 
 ```python

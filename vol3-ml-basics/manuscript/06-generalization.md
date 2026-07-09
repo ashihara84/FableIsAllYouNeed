@@ -183,6 +183,8 @@ assert train_losses[9] < train_losses[best_degree]
 
 この表をグラフにしたものが図6.1です。描画コードは `code/ch06/polynomial_overfitting.py` 末尾(matplotlib、`degrees` 対 `train_losses`/`val_losses`、縦軸対数)を参照してください。
 
+![図6.1](../figures/ch06-overfitting-ucurve.png)
+
 図6.1: 多項式の次数に対する訓練loss(丸)と検証loss(四角)。縦軸は対数。2本の線は3次まで一緒に下り、そこで別れる。訓練lossはそのまま右下へ滑り続け、検証lossは底を打って反転し、右端で跳ね上がる。この「ワニが口を開けたような」2本の線の開きこそが過学習の姿であり、本巻で持ち帰ってほしい1枚です。
 
 ### 何が起きていたのか

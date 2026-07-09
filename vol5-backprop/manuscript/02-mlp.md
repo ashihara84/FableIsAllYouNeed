@@ -137,7 +137,9 @@ p = mlp_forward(probe, W1, b1, W2, b2).ravel()
 assert p[0] < 0.5 and p[1] < 0.5 and p[2] > 0.5
 ```
 
-全文と動作確認は `code/ch02/mlp_forward.py`(`python3` で全 assert 通過)にあります。決定境界を絵にする matplotlib コードも同ファイルに含めてあります(描画はお手元で)。
+全文と動作確認は `code/ch02/mlp_forward.py`(`python3` で全 assert 通過)にあります。決定境界を絵にする matplotlib コードは `figures/generate_figures.py` にあります。
+
+![図2.1](../figures/ch02-decision-boundary.png)
 
 図2.1: 手調整した2層MLPの決定境界。左下から右上へ斜めに走る帯が「1」と判定される領域。× の2点 $(0,1), (1,0)$ は帯の中、○ の2点 $(0,0), (1,1)$ は帯の外に落ち、境界は2本の平行な直線になっている。
 

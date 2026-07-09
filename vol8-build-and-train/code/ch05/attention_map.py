@@ -75,7 +75,7 @@ def print_map(src_ids, out_ids, A):
         print("%12s" % tok + "".join("%10.2f" % v for v in A[r]))
 
 
-# 図5.1 の描画コード(掲載のみ。第6巻7.3の図7.1と同じ形式): A は上の重み行列
+# 図5.2 の描画コード(掲載のみ。第6巻7.3の図7.1と同じ形式): A は上の重み行列
 # import matplotlib.pyplot as plt
 # fig, ax = plt.subplots(figsize=(6, 6))
 # ax.imshow(A, cmap="Greys", vmin=0.0, vmax=1.0)

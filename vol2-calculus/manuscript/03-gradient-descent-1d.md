@@ -137,6 +137,8 @@ assert np.all(np.diff(np.abs(xs_div)) > 0)
 
 軌跡を目で見ておきましょう。「谷の断面図の上に、たどった点を順に打つ」図を、4つの $\eta$($0.05, 0.8, 1.0, 1.05$)について描きます。描画コードは `code/ch03/gradient_descent_1d.py` に含めてあります(`matplotlib` で図3.1 を出力)。核心は、谷の断面 `ax.plot(x_curve, f(x_curve))` の上に降下の軌跡 `ax.plot(xs, f(xs), "o-")` を重ねる部分です。
 
+![図3.1](../figures/ch03-gd-learning-rates.png)
+
 図3.1: $\eta$ による軌跡の違い。灰色の放物線が谷の断面、点列が勾配降下のたどった足跡(線は移動の順序)。
 
 実行すると、4枚のパネルにそれぞれこんな光景が見えます。
